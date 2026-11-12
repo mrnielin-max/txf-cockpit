@@ -1,7 +1,7 @@
 'use client';
 import TxfHeader from '@/components/txf/TxfHeader';
 import GlobalPulse from '@/components/txf/GlobalPulse';
-import { NewsFlow, HistoricalEvents, SessionClock } from '@/components/txf/Panels';
+import { NewsFlow, HistoricalEvents, SessionClock, ChipsDailyPanel } from '@/components/txf/Panels';
 import MarketBanner from '@/components/MarketBanner';
 import IndexChart from '@/components/IndexChart';
 import ContributionPanel from '@/components/ContributionPanel';
@@ -47,7 +47,10 @@ export default function Home() {
           {/* ③ 海外脈動：TSM ADR、美股期貨、VIX、美債、匯率、日經 */}
           <GlobalPulse />
 
-          {/* ④ 兩欄：大盤分時/貢獻度 + 籌碼/行事曆 */}
+          {/* ④ 每日籌碼：散戶多空比(小台/微台)、PC OI、月選最大OI、法人淨部位、基差結構 */}
+          <ChipsDailyPanel />
+
+          {/* ⑤ 兩欄：大盤分時/貢獻度 + 籌碼/行事曆 */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 16, alignItems: 'start' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <IndexChart />

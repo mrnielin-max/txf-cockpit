@@ -79,6 +79,147 @@ export function NewsFlow() {
 }
 
 // ═══════════════════════════════════════
+// 每日籌碼面板：散戶多空比(小台/微台)、PC OI、月選最大OI、三大法人淨部位
+// 資料來源：taiwan-futures-daily（每日 17:45 自動更新）
+// ═══════════════════════════════════════
+interface ChipsDaily {
+  ok: boolean;
+  date: string | null;
+  basis: {
+    indexClose: number | null; frontClose: number | null;
+    closeSpread: number | null; closeSpreadPct: number | null;
+    aligned1330Spread: number | null; aligned1330SpreadPct: number | null;
+  } | null;
+  chips: {
+    frontSettle: number | null; settleChg: number | null; frontOI: number | null;
+    foreignNetOI: number | null; foreignNetOIChg: number | null;
+    trustNetOI: number | null; dealerNetOI: number | null;
+    top10SpecificNet: number | null;
+    retailLongShortMiniPct: number | null; retailLongShortMicroPct: number | null;
+    pcOiRatioPct: number | null;
+    callMaxOIStrike: number | null; putMaxOIStrike: number | null;
+  } | null;
+  retailTrend: { date: string; mini: number | null; micro: number | null; foreign: number | null }[];
+}
+
+function cellColor(v: number | null, bullAbove: number, bearBelow: number): string {
+  if (v === null) return '#8b949e';
+  if (v >= bullAbove) return '#f85149'; // 散戶過度看多 = 反向空頭訊號（紅）
+  if (v <= bearBelow) return '#3fb950'; // 散戶過度看空 = 反向多頭訊號（綠）
+  return '#d29922';
+}
+export function ChipsDailyPanel() {
+  const [d, setD] = useState<ChipsDaily | null>(null);
+  useEffect(() => {
+    fetch('/api/chips-daily').then(r => r.json()).then(setD).catch(() => {});
+  }, []);
+  if (!d || !d.ok) return <div className="panel" style={{ padding: 16 }}><div className="panel-title">🧮 每日籌碼 · 散戶多空比</div><div style={{ color: '#8b949e' }}>載入中...</div></div>;
+
+  const c = d.chips;
+  const b = d.basis;
+  const mini = c?.retailLongShortMiniPct ?? null;
+  const micro = c?.retailLongShortMicroPct ?? null;
+  const pc = c?.pcOiRatioPct ?? null;
+
+  // 散戶多空比訊號解讀（反向指標；CSV 為「作多%−作空%」淨差，可為負）
+  const signal = (() => {
+    if (mini === null) return { txt: '資料不足', color: '#8b949e' };
+    if (mini >= 20) return { txt: '散戶過度看多（淨多比 >=+20）→ 歷史經驗偏反向空頭訊號', color: '#f85149' };
+    if (mini <= -10) return { txt: '散戶過度看空（淨多比 <=-10）→ 歷史經驗偏反向多頭訊號', color: '#3fb950' };
+    return { txt: '散戶情緒中性區間', color: '#d29922' };
+  })();
+
+  return (
+    <div className="panel" style={{ padding: 16 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+        <div className="panel-title" style={{ marginBottom: 0 }}>🧮 每日籌碼 · 散戶多空比與選擇權結構</div>
+        <span style={{ color: '#8b949e', fontSize: 12 }}>資料日期 {d.date}（每日 17:45 更新）</span>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
+        <div style={{ background: '#0d1117', borderRadius: 8, padding: '10px 12px', border: '1px solid #21262d' }}>
+          <div style={{ color: '#8b949e', fontSize: 12 }}>散戶多空比（小台）</div>
+          <div style={{ color: cellColor(mini, 20, -10), fontSize: 22, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>
+            {mini !== null ? mini.toFixed(1) + '%' : '--'}
+          </div>
+        </div>
+        <div style={{ background: '#0d1117', borderRadius: 8, padding: '10px 12px', border: '1px solid #21262d' }}>
+          <div style={{ color: '#8b949e', fontSize: 12 }}>散戶多空比（微台）</div>
+          <div style={{ color: cellColor(micro, 20, -10), fontSize: 22, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>
+            {micro !== null ? micro.toFixed(1) + '%' : '--'}
+          </div>
+        </div>
+        <div style={{ background: '#0d1117', borderRadius: 8, padding: '10px 12px', border: '1px solid #21262d' }}>
+          <div style={{ color: '#8b949e', fontSize: 12 }}>PC 未平倉比</div>
+          <div style={{ color: pc !== null && pc >= 130 ? '#3fb950' : pc !== null && pc <= 70 ? '#f85149' : '#d29922', fontSize: 22, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>
+            {pc !== null ? pc.toFixed(1) + '%' : '--'}
+          </div>
+          <div style={{ color: '#6b7280', fontSize: 11 }}>≥130% 避險偏多／≤70% 貪婪</div>
+        </div>
+        <div style={{ background: '#0d1117', borderRadius: 8, padding: '10px 12px', border: '1px solid #21262d' }}>
+          <div style={{ color: '#8b949e', fontSize: 12 }}>月選最大 OI 履約價</div>
+          <div style={{ color: '#e6edf3', fontSize: 15, fontWeight: 700, marginTop: 3 }}>
+            買 {c?.callMaxOIStrike ?? '--'} ／ 賣 {c?.putMaxOIStrike ?? '--'}
+          </div>
+          <div style={{ color: '#6b7280', fontSize: 11 }}>Max Pain 磁吸參考區</div>
+        </div>
+        <div style={{ background: '#0d1117', borderRadius: 8, padding: '10px 12px', border: '1px solid #21262d' }}>
+          <div style={{ color: '#8b949e', fontSize: 12 }}>外資台指期淨未平倉</div>
+          <div style={{ color: (c?.foreignNetOI ?? 0) >= 0 ? '#f85149' : '#3fb950', fontSize: 20, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>
+            {c?.foreignNetOI !== null && c?.foreignNetOI !== undefined ? c.foreignNetOI.toLocaleString() : '--'}
+          </div>
+          {c?.foreignNetOIChg !== null && c?.foreignNetOIChg !== undefined && (
+            <div style={{ color: '#8b949e', fontSize: 12 }}>日變動 {c.foreignNetOIChg > 0 ? '+' : ''}{c.foreignNetOIChg.toLocaleString()}</div>
+          )}
+        </div>
+        <div style={{ background: '#0d1117', borderRadius: 8, padding: '10px 12px', border: '1px solid #21262d' }}>
+          <div style={{ color: '#8b949e', fontSize: 12 }}>十大特定法人淨部位</div>
+          <div style={{ color: (c?.top10SpecificNet ?? 0) >= 0 ? '#f85149' : '#3fb950', fontSize: 20, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>
+            {c?.top10SpecificNet !== null && c?.top10SpecificNet !== undefined ? c.top10SpecificNet.toLocaleString() : '--'}
+          </div>
+          <div style={{ color: '#6b7280', fontSize: 11 }}>正套多／逆套空</div>
+        </div>
+      </div>
+
+      {/* 基差結構 */}
+      {b && (
+        <div style={{ marginTop: 10, background: '#0d1117', borderRadius: 8, padding: '10px 12px', border: '1px solid #21262d', fontSize: 13, color: '#8b949e' }}>
+          <b style={{ color: '#e6edf3' }}>基差結構：</b>
+          收盤價差 <b style={{ color: '#d29922' }}>{b.closeSpread !== null ? b.closeSpread.toFixed(0) : '--'}</b> 點
+          （{b.closeSpreadPct !== null ? b.closeSpreadPct.toFixed(2) : '--'}%）
+          ｜13:30 對齊價差 <b style={{ color: '#39c5cf' }}>{b.aligned1330Spread !== null ? b.aligned1330Spread.toFixed(0) : '--'}</b> 點
+          （{b.aligned1330SpreadPct !== null ? b.aligned1330SpreadPct.toFixed(2) : '--'}%）
+          — 兩價差之差 ≈ 除權息蒸發點數影響
+        </div>
+      )}
+
+      {/* 近10日散戶多空比趨勢 */}
+      {d.retailTrend && d.retailTrend.length > 1 && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ color: '#8b949e', fontSize: 12, marginBottom: 4 }}>近 {d.retailTrend.length} 日散戶多空比（小台，作多%−作空% 淨差）</div>
+          <div style={{ display: 'flex', alignItems: 'flex-end', gap: 4, height: 60 }}>
+            {d.retailTrend.map(r => (
+              <div key={r.date} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                <div style={{
+                  width: '100%', borderRadius: 3,
+                  height: r.mini !== null ? Math.max(4, Math.min(56, ((r.mini + 30) / 90) * 56)) : 4,
+                  background: r.mini !== null ? cellColor(r.mini, 20, -10) : '#30363d',
+                }} />
+                <span style={{ fontSize: 10, color: '#6b7280' }}>{r.date?.slice(5)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div style={{ marginTop: 10, padding: '8px 12px', background: '#1a1200', border: '1px solid #d2992244', borderRadius: 8, color: signal.color, fontSize: 13, fontWeight: 700 }}>
+        💡 {signal.txt}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════
 // 歷史事件庫：曾經影響台指期的重大事件
 // ═══════════════════════════════════════
 const catStyle: Record<HistEvent['category'], string> = {
@@ -125,25 +266,47 @@ export function HistoricalEvents() {
 // ═══════════════════════════════════════
 // 交易時段儀表：台股/美股開收盤倒數 + 結算日提醒
 // ═══════════════════════════════════════
-// 所有時間以 UTC 計算，顯示越南時間 ICT(UTC+7)
-const SESSIONS = [
-  { id: 'tw-open',  name: '台股開盤',        utcH: 1,  utcM: 0,  days: [1, 2, 3, 4, 5], note: '台指期日盤 08:45 開始' },
-  { id: 'tw-close', name: '台股收盤',        utcH: 5,  utcM: 30, days: [1, 2, 3, 4, 5], note: '13:30 ICT 收盤、14:00 台指期日盤收' },
-  { id: 'us-pre',   name: '美股盤前關注',    utcH: 12, utcM: 0,  days: [1, 2, 3, 4, 5], note: '20:00 ICT 歐洲開盤、美股期貨動能' },
-  { id: 'us-open',  name: '美股開盤',        utcH: 14, utcM: 30, days: [1, 2, 3, 4, 5], note: '21:30/22:30 ICT（冬令/夏令）' },
-  { id: 'us-close', name: '美股收盤',        utcH: 21, utcM: 0,  days: [1, 2, 3, 4, 5], note: '04:00/05:00 ICT 隔日、台指夜盤 05:00 收' },
+// 所有時間以 UTC 定義、顯示越南時間 ICT(UTC+7)；台北 = ICT+1
+// 美股時段依美國夏令/冬令自動切換（3月第二個週日～11月第一個週日為夏令 EDT）
+function isUsDst(d: Date): boolean {
+  const y = d.getUTCFullYear();
+  // 3月第二個週日 07:00 UTC 起
+  const mar = new Date(Date.UTC(y, 2, 1));
+  while (mar.getUTCDay() !== 0) mar.setUTCDate(mar.getUTCDate() + 1);
+  mar.setUTCDate(mar.getUTCDate() + 7); // 第二個週日
+  const marStart = Date.UTC(y, 2, mar.getUTCDate(), 7);
+  // 11月第一個週日 06:00 UTC 止
+  const nov = new Date(Date.UTC(y, 10, 1));
+  while (nov.getUTCDay() !== 0) nov.setUTCDate(nov.getUTCDate() + 1);
+  const novEnd = Date.UTC(y, 10, nov.getUTCDate(), 6);
+  const t = d.getTime();
+  return t >= marStart && t < novEnd;
+}
+
+interface SessionDef {
+  id: string; name: string; days: number[]; note: string;
+  utcH: number; utcM: number; dstShiftH?: number; // 夏令時偏移（美股 -1）
+}
+
+const SESSIONS: SessionDef[] = [
+  { id: 'txf-open',  name: '台指期日盤開盤',  utcH: 0,  utcM: 45, days: [1,2,3,4,5], note: '台北 08:45 / ICT 07:45' },
+  { id: 'tw-open',   name: '台股現貨開盤',    utcH: 1,  utcM: 0,  days: [1,2,3,4,5], note: '台北 09:00 / ICT 08:00' },
+  { id: 'tw-close',  name: '台股現貨收盤',    utcH: 5,  utcM: 30, days: [1,2,3,4,5], note: '台北 13:30 / ICT 12:30' },
+  { id: 'txf-close', name: '台指期日盤收盤',  utcH: 5,  utcM: 45, days: [1,2,3,4,5], note: '台北 13:45 / ICT 12:45' },
+  { id: 'txf-night', name: '台指期夜盤開盤',  utcH: 7,  utcM: 0,  days: [1,2,3,4,5], note: '台北 15:00–次日 05:00 / ICT 14:00–04:00' },
+  { id: 'us-open',   name: '美股開盤',        utcH: 14, utcM: 30, days: [1,2,3,4,5], note: 'ICT 20:30（夏）/ 21:30（冬）', dstShiftH: -1 },
+  { id: 'us-close',  name: '美股收盤',        utcH: 21, utcM: 0,  days: [1,2,3,4,5], note: 'ICT 03:00（夏）/ 04:00（冬）', dstShiftH: -1 },
 ];
 
-function nextOccurrence(utcH: number, utcM: number, days: number[]): Date {
-  const now = new Date();
+function nextOccurrence(s: SessionDef, now: Date): Date {
   for (let add = 0; add < 8; add++) {
     const d = new Date(now.getTime() + add * 86400000);
-    const wd = (d.getUTCDay() + 6) % 7; // Mon=0...Sun=6 → 對齊 days[1..5]
     const dow = d.getUTCDay(); // 0=Sun
-    if (!days.includes(dow)) continue;
-    d.setUTCHours(utcH, utcM, 0, 0);
+    if (!s.days.includes(dow)) continue;
+    let h = s.utcH, m = s.utcM;
+    if (s.dstShiftH && isUsDst(d)) h += s.dstShiftH;
+    d.setUTCHours(h, m, 0, 0);
     if (d > now) return d;
-    void wd;
   }
   return new Date(now.getTime() + 86400000);
 }
@@ -175,7 +338,7 @@ export function SessionClock() {
   const settleDays = Math.ceil((settle.getTime() - now.getTime()) / 86400000);
 
   const rows = SESSIONS.map(s => {
-    const next = nextOccurrence(s.utcH, s.utcM, s.days);
+    const next = nextOccurrence(s, now);
     const diff = next.getTime() - now.getTime();
     const live = diff < 0 && diff > -3600000;
     return { ...s, next, diff, live };
