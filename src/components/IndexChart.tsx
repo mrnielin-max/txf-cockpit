@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 const TABS = [
   { key: 'taiex', label: '加權指數' },
   { key: 'otc',   label: '櫃買指數' },
-  { key: 'fitx',  label: '台指期貨' },
+  { key: 'fitx',  label: '台指期貨電子盤' },
 ];
 
 interface Point { t: string; v: number }
