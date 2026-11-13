@@ -8,6 +8,7 @@ import ContributionPanel from '@/components/ContributionPanel';
 import InstitutionsPanel from '@/components/InstitutionsPanel';
 import CalendarPanel from '@/components/CalendarPanel';
 import AIVerdict from '@/components/txf/AIVerdict';
+import AdviceLog from '@/components/txf/AdviceLog';
 
 export default function Home() {
   return (
@@ -64,6 +65,9 @@ export default function Home() {
 
           {/* ⑦ AI 決策引擎（最下方統整專欄）：多因子評分 + 蒙地卡羅模擬 + 買賣時點建議 */}
           <AIVerdict />
+
+          {/* ⑧ 每 30 分鐘建議紀錄：整點/半點自動存檔的買/賣/觀望快照 */}
+          <AdviceLog />
         </div>
       </div>
 

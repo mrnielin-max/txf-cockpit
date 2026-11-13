@@ -78,7 +78,7 @@ export default function AIVerdict() {
   if (!v) return (
     <div className="panel" style={{ padding: 16 }}>
       <div className="panel-title">🤖 AI 決策引擎 · 多因子模擬評估</div>
-      <div style={{ color: '#8b949e' }}>正在整合 18 大因子並執行 10,000 次蒙地卡羅模擬（約 10 秒）...</div>
+      <div style={{ color: '#8b949e' }}>正在整合 19 大因子並執行 10,000 次蒙地卡羅模擬（約 10 秒）...</div>
     </div>
   );
 
@@ -156,7 +156,7 @@ export default function AIVerdict() {
             <div style={{ position: 'absolute', top: -4, width: 4, height: 18, borderRadius: 2, background: '#fff', boxShadow: '0 0 6px #000', left: `calc(${Math.min(100, Math.max(0, ((v.totalScore + v.maxScore) / (2 * v.maxScore)) * 100))}% - 2px)` }} />
           </div>
           <div style={{ color: '#8b949e', fontSize: 12, marginTop: 5 }}>
-            帶對應：≤−9 強勢看空｜−4~−8 偏空｜−3~+3 中性｜+4~+8 偏多｜≥+9 強勢看多（{v.assessment?.factorCount ?? 18} 因子加總，每因子 +3~−3，每格都有歷史條件機率依據，見下方因子明細）
+            帶對應：≤−11 強勢看空｜−4~−10 偏空｜−3~+3 中性｜+4~+10 偏多｜≥+11 強勢看多（{v.assessment?.factorCount ?? 18} 因子加總，美股即時風向權重×2，每格都有歷史條件機率依據，見下方因子明細）
           </div>
         </div>
 

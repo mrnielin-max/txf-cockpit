@@ -155,7 +155,7 @@ function fmtDate(d: Date): string {
 }
 
 export async function GET() {
-  const [txfRaw, chipsTxt, twii1d, twii5m, spx1d, vixQ, tsmQ, a50Txt, nvdaQ, soxQ, twdQ, tnxQ, dxyQ, goldQ, oilQ, tsmAdrQ, newsAlerts] = await Promise.all([
+  const [txfRaw, chipsTxt, twii1d, twii5m, spx1d, vixQ, tsmQ, a50Txt, nvdaQ, soxQ, twdQ, tnxQ, dxyQ, goldQ, oilQ, tsmAdrQ, esQ, nqQ, twnQ, smhQ, newsAlerts] = await Promise.all([
     fetch('https://mis.taifex.com.tw/futures/api/getQuoteList', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': UA },
       body: JSON.stringify({ MarketType: '1', CommodityID: 'TXF' }),
@@ -176,6 +176,11 @@ export async function GET() {
     fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/GC%3DF?interval=1d&range=5d'),
     fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/CL%3DF?interval=1d&range=5d'),
     fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/TSM?interval=1d&range=5d'),
+    // ── 美股盤中即時代理（美股開盤期間：S&P/納指期貨、TWN ETF、費半 ETF SMH）──
+    fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/ES%3DF?interval=1d&range=5d'),
+    fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/NQ%3DF?interval=1d&range=5d'),
+    fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/TWN?interval=1d&range=5d'),
+    fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/SMH?interval=1d&range=5d'),
     scanNewsEvents(),
   ]);
 
@@ -457,6 +462,17 @@ export async function GET() {
     const s = (tnx.chg ?? 0) > 1.5 ? -1 : (tnx.chg ?? 0) < -1.5 ? 1 : 0;
     add('tnx', '美債 10 年殖利率', s, `殖利率 ${tnx.last.toFixed(2)}%（${(tnx.chg ?? 0) >= 0 ? '+' : ''}${(tnx.chg ?? 0).toFixed(2)}%）→ ${s < 0 ? '利率快速上升壓抑股債估值' : s > 0 ? '利率回落有利成長股' : '穩定'}`);
   }
+  // F11g 美股盤中即時代理（ES/NQ 期貨 + TWN + SMH）—— 下午夜盤/美股開盤期間的最即時風向
+  {
+    const es = yahooChgPct(esQ), nq = yahooChgPct(nqQ), twn = yahooChgPct(twnQ), smh = yahooChgPct(smhQ);
+    const live = [es.chg, nq.chg, twn.chg, smh.chg].filter((x): x is number => x !== null);
+    if (live.length >= 2) {
+      const avg = live.reduce((a, b) => a + b, 0) / live.length;
+      // 權重加倍：這是「現在正在發生」的行情，比昨日收盤數據對未來數小時更有預測力
+      const s = (avg > 0.5 ? 3 : avg > 0 ? 1 : avg < -0.5 ? -3 : avg < 0 ? -1 : 0) * 2;
+      add('uslive', '美股即時風向', s, `此刻美股：ES期貨 ${es.chg !== null ? (es.chg >= 0 ? '+' : '') + es.chg.toFixed(2) + '%' : '--'}、NQ期貨 ${nq.chg !== null ? (nq.chg >= 0 ? '+' : '') + nq.chg.toFixed(2) + '%' : '--'}、TWN台股ETF ${twn.chg !== null ? (twn.chg >= 0 ? '+' : '') + twn.chg.toFixed(2) + '%' : '--'}、SMH費半ETF ${smh.chg !== null ? (smh.chg >= 0 ? '+' : '') + smh.chg.toFixed(2) + '%' : '--'} → ${s >= 2 ? '盤中強多，台指期夜盤/明日開盤大概率跟漲' : s > 0 ? '盤中偏多' : s <= -2 ? '盤中急跌，台指期夜盤/明日開盤大概率跟跌，多單應立即減碼' : s < 0 ? '盤中偏空' : '持平'}`);
+    }
+  }
   // F12 重大事件（新聞掃描；命中負面關鍵字扣分）
   const severeKw = ['辭職', '請辭', '閃辭', '崩盤', '暴跌', '崩跌', '戰爭', '宣戰', '開戰', '金融危機', '股災', '破產', '制裁'];
   const severeHits = newsAlerts.filter(a => severeKw.some(k => a.keyword === k || a.title.includes(k)));
@@ -466,7 +482,7 @@ export async function GET() {
   else add('news', '重大事件警示', 0, `近3日無重大黑天鵝事件命中`);
 
   const totalScore = factors.reduce((a, f) => a + f.score, 0);
-  const maxScore = 26; // 因子加總上限（含 SOX/台幣/ADR/外資現貨/美債後）
+  const maxScore = 32; // 因子加總上限（含美股即時風向 uslive ±6 後）
   const scoreRatio = totalScore / maxScore;
 
   // 分數帶對應
@@ -559,6 +575,13 @@ export async function GET() {
   push('融資餘額', marginBalance, v => (v / 1e8).toFixed(0) + ' 億元');
   push('近2年日報酬樣本', closes.length ? +closes.length : null, v => v.toFixed(0) + ' 日');
   push('重大新聞警示', newsAlerts.length || null, v => v.toFixed(0) + ' 則命中');
+  {
+    const es = yahooChgPct(esQ), nq = yahooChgPct(nqQ), twn = yahooChgPct(twnQ), smh = yahooChgPct(smhQ);
+    push('美股即時·ES期貨', es.chg, v => (v >= 0 ? '+' : '') + v.toFixed(2) + '%');
+    push('美股即時·NQ期貨', nq.chg, v => (v >= 0 ? '+' : '') + v.toFixed(2) + '%');
+    push('美股即時·TWN台股ETF', twn.chg, v => (v >= 0 ? '+' : '') + v.toFixed(2) + '%');
+    push('美股即時·SMH費半ETF', smh.chg, v => (v >= 0 ? '+' : '') + v.toFixed(2) + '%');
+  }
 
   const dataMissing = [
     { name: 'CDF 台積電期貨盤中報價', why: 'TAIFEX MIS 端點對 CDF 商品代碼不回傳資料，日報表端點需 session 驗證', impact: '台積電期貨比現股早反映法人態度，缺它會漏掉「大戶提前轉彎」的領先訊號（目前以 2330 現股 + TSM ADR + SOX 三者替代，覆蓋約 80%）', severity: '高' },
@@ -571,7 +594,7 @@ export async function GET() {
 
   const narrative: string[] = [];
   const ref0 = frontLast ?? spot ?? 0;
-  narrative.push(`【評估方法】引擎串接 ${dataReady.length} 項即時數據，經 18 個因子評分（每因子 +3~−3，滿分 ±${maxScore}），得到綜合分數 ${totalScore > 0 ? '+' : ''}${totalScore}（${band.label}）；再用近1年 ${closes.length} 個交易日的真實日報酬做 10,000 次蒙地卡羅抽樣，並疊加因子分數調整漂移項（${(driftAdj * 100).toFixed(2)}%/日），模擬未來 5 日路徑分布。`);
+  narrative.push(`【評估方法】引擎串接 ${dataReady.length} 項即時數據，經 ${factors.length} 個因子評分（每因子 +3~−3，美股即時風向權重×2，滿分 ±${maxScore}），得到綜合分數 ${totalScore > 0 ? '+' : ''}${totalScore}（${band.label}）；再用近1年 ${closes.length} 個交易日的真實日報酬做 10,000 次蒙地卡羅抽樣，並疊加因子分數調整漂移項（${(driftAdj * 100).toFixed(2)}%/日），模擬未來 5 日路徑分布。`);
   narrative.push(`【多頭依據】${factors.filter(f => f.score > 0).map(f => `${f.label} +${f.score}`).join('、') || '目前沒有正面因子'}`);
   narrative.push(`【空頭依據】${factors.filter(f => f.score < 0).map(f => `${f.label} ${f.score}`).join('、') || '目前沒有負面因子'}`);
   narrative.push(`【模擬結論】5 日上漲機率 ${(up5 * 100).toFixed(0)}%、下跌 ${(down5 * 100).toFixed(0)}%，期望報酬 ${(exp5 * 100 >= 0 ? '+' : '') + (exp5 * 100).toFixed(2)}%；80% 信賴區間落在 ${p10Pts?.toLocaleString()} ~ ${p90Pts?.toLocaleString()} 點（現價 ${Math.round(ref0).toLocaleString()}）。下個交易日（${fmtDate(ntd)}）上漲機率 ${(d1Up * 100).toFixed(0)}%。`);
@@ -640,7 +663,7 @@ function buildVerdict(p: {
   factorCount: number;
 }) {
   const s = p.totalScore;
-  const dir = s >= 9 ? 'strong-buy' : s >= 4 ? 'buy' : s <= -9 ? 'strong-sell' : s <= -4 ? 'sell' : 'neutral';
+  const dir = s >= 11 ? 'strong-buy' : s >= 4 ? 'buy' : s <= -11 ? 'strong-sell' : s <= -4 ? 'sell' : 'neutral';
   const actionMap: Record<string, { action: string; color: string; conf: string }> = {
     'strong-buy':  { action: '✅ 建議買（做多）', color: '#f85149', conf: '高' },
     'buy':         { action: '✅ 建議買（輕倉試多）', color: '#f0883e', conf: '中' },
@@ -664,7 +687,7 @@ function buildVerdict(p: {
   }
 
   // ── 分數說明 ──
-  lines.push(`【綜合分數說明】目前 ${s > 0 ? '+' : ''}${s} 分（滿分 ±${p.maxScore}）。分數 = ${p.factorCount} 個因子加總，每因子 +3~−3。帶對應：≥+9 強勢看多、+4~+8 偏多、−3~+3 中性、−4~−8 偏空、≤−9 強勢看空。你現在落在「${p.band.label}」區。`);
+  lines.push(`【綜合分數說明】目前 ${s > 0 ? '+' : ''}${s} 分（滿分 ±${p.maxScore}）。分數 = ${p.factorCount} 個因子加總（美股即時風向權重×2）。帶對應：≥+11 強勢看多、+4~+10 偏多、−3~+3 中性、−4~−10 偏空、≤−11 強勢看空。你現在落在「${p.band.label}」區。`);
 
   // ── 下一交易日機率（修正：不叫「明日」，用實際交易日 + 日期）──
   const dayLabel = p.ph.nextIsToday ? '今日' : `下個交易日 ${fmtDate(p.ph.ntd)}`;
