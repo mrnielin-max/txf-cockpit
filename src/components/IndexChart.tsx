@@ -53,9 +53,9 @@ export default function IndexChart() {
 
   return (
     <div style={{ background: '#161b22', borderRadius: 10, padding: '16px 16px 8px' }}>
-      {/* 標題 + Tab */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-        <div style={{ borderLeft: '3px solid #f97316', paddingLeft: 10, color: '#e6edf3', fontWeight: 700, fontSize: 16 }}>
+      {/* 標題 + Tab（手機自動換行、按鈕不拆字） */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+        <div style={{ borderLeft: '3px solid #f97316', paddingLeft: 10, color: '#e6edf3', fontWeight: 700, fontSize: 16, whiteSpace: 'nowrap' }}>
           大盤走勢
         </div>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
@@ -64,7 +64,7 @@ export default function IndexChart() {
               padding: '5px 12px', borderRadius: 6, border: 'none', cursor: 'pointer',
               background: active === i ? '#f97316' : '#21262d',
               color: active === i ? '#fff' : '#8b949e',
-              fontSize: 13, fontWeight: 600,
+              fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap',
             }}>
               {t.label}
             </button>
@@ -87,15 +87,16 @@ export default function IndexChart() {
         </div>
       )}
 
-      {/* 折線圖 */}
-      <div style={{ background: '#0d1117', borderRadius: 8, overflow: 'hidden', height: H + 8 }}>
+      {/* 折線圖（無資料時縮成小高度提示列，不留大片空白） */}
+      <div style={{ background: '#0d1117', borderRadius: 8, overflow: 'hidden', height: points.length >= 2 || loading ? H + 8 : 'auto' }}>
         {loading ? (
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#484f58', fontSize: 13 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: H + 8, color: '#484f58', fontSize: 13 }}>
             載入中…
           </div>
         ) : points.length < 2 ? (
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#484f58', fontSize: 13 }}>
-            盤中資料暫無（非交易時段）
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '10px 12px', color: '#6b7280', fontSize: 12.5, flexWrap: 'wrap', textAlign: 'center' }}>
+            <span>💤 非交易時段，無盤中即時資料</span>
+            <span style={{ color: '#484f58' }}>最新收盤價請看頁首報價列；盤中走勢開盤後自動載入</span>
           </div>
         ) : (
           <svg width="100%" height={H + 8} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: 'block' }}>

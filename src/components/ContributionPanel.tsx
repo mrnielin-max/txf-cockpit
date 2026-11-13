@@ -51,7 +51,7 @@ export default function ContributionPanel() {
       {loading ? (
         <div style={{ color: '#6b7280', textAlign: 'center', padding: 20 }}>載入中...</div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        <div className="contrib-grid">
           {/* 正貢獻 */}
           <div>
             <div style={{

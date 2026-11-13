@@ -62,6 +62,8 @@ html, body {
 @media (max-width: 600px) {
   .main-wrap {
     padding: 10px 10px;
+    /* 手機瀏覽器浮動網址列會遮住底部內容，預留空間 */
+    padding-bottom: 80px;
   }
 }
 
@@ -104,6 +106,16 @@ html, body {
 .scroll-x {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
+}
+
+/* ══ 貢獻排行雙欄：手機縮小間距 ══ */
+.contrib-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+@media (max-width: 480px) {
+  .contrib-grid { gap: 6px; }
 }
 
 /* ══ AI 專欄大字手機縮小 ══ */
