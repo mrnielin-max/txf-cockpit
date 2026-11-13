@@ -7,6 +7,7 @@ import IndexChart from '@/components/IndexChart';
 import ContributionPanel from '@/components/ContributionPanel';
 import InstitutionsPanel from '@/components/InstitutionsPanel';
 import CalendarPanel from '@/components/CalendarPanel';
+import AIVerdict from '@/components/txf/AIVerdict';
 
 export default function Home() {
   return (
@@ -67,6 +68,9 @@ export default function Home() {
 
           {/* ⑥ 歷史鏡鑑：曾重創/推升台指期的事件庫 */}
           <HistoricalEvents />
+
+          {/* ⑦ AI 決策引擎（最下方統整專欄）：多因子評分 + 蒙地卡羅模擬 + 買賣時點建議 */}
+          <AIVerdict />
         </div>
       </div>
 
