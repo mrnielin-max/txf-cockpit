@@ -289,14 +289,36 @@ interface SessionDef {
 }
 
 const SESSIONS: SessionDef[] = [
-  { id: 'txf-open',  name: '台指期日盤開盤',  utcH: 0,  utcM: 45, days: [1,2,3,4,5], note: '台北 08:45 / ICT 07:45' },
-  { id: 'tw-open',   name: '台股現貨開盤',    utcH: 1,  utcM: 0,  days: [1,2,3,4,5], note: '台北 09:00 / ICT 08:00' },
-  { id: 'tw-close',  name: '台股現貨收盤',    utcH: 5,  utcM: 30, days: [1,2,3,4,5], note: '台北 13:30 / ICT 12:30' },
-  { id: 'txf-close', name: '台指期日盤收盤',  utcH: 5,  utcM: 45, days: [1,2,3,4,5], note: '台北 13:45 / ICT 12:45' },
-  { id: 'txf-night', name: '台指期夜盤開盤',  utcH: 7,  utcM: 0,  days: [1,2,3,4,5], note: '台北 15:00–次日 05:00 / ICT 14:00–04:00' },
-  { id: 'us-open',   name: '美股開盤',        utcH: 14, utcM: 30, days: [1,2,3,4,5], note: 'ICT 20:30（夏）/ 21:30（冬）', dstShiftH: -1 },
-  { id: 'us-close',  name: '美股收盤',        utcH: 21, utcM: 0,  days: [1,2,3,4,5], note: 'ICT 03:00（夏）/ 04:00（冬）', dstShiftH: -1 },
+  // 固定邏輯順序：日盤開 → 日盤收 → 夜盤開 → 夜盤收 → 現貨 → 美股（不再依倒數時間亂跳）
+  { id: 'txf-open',       name: '① 台指期日盤開盤', utcH: 0,  utcM: 45, days: [1,2,3,4,5], note: '台北 08:45 / ICT 07:45' },
+  { id: 'txf-close',      name: '② 台指期日盤收盤', utcH: 5,  utcM: 45, days: [1,2,3,4,5], note: '台北 13:45 / ICT 12:45' },
+  { id: 'txf-night',      name: '③ 台指期夜盤開盤', utcH: 7,  utcM: 0,  days: [1,2,3,4,5], note: '台北 15:00 / ICT 14:00' },
+  { id: 'txf-night-close',name: '④ 台指期夜盤收盤', utcH: 21, utcM: 0,  days: [1,2,3,4,5], note: '台北 次日05:00 / ICT 次日04:00（週六凌晨亦屬夜盤收）' },
+  { id: 'tw-open',        name: '⑤ 台股現貨開盤',   utcH: 1,  utcM: 0,  days: [1,2,3,4,5], note: '台北 09:00 / ICT 08:00' },
+  { id: 'tw-close',       name: '⑥ 台股現貨收盤',   utcH: 5,  utcM: 30, days: [1,2,3,4,5], note: '台北 13:30 / ICT 12:30' },
+  { id: 'us-open',        name: '⑦ 美股開盤',       utcH: 14, utcM: 30, days: [1,2,3,4,5], note: '台北 21:30（夏）/ 22:30（冬）', dstShiftH: -1 },
+  { id: 'us-close',       name: '⑧ 美股收盤',       utcH: 21, utcM: 0,  days: [1,2,3,4,5], note: '台北 次日04:00（夏）/ 05:00（冬）', dstShiftH: -1 },
 ];
+
+// 目前進行中的時段（台北時間判斷）
+function activeSessions(now: Date): string[] {
+  const tpe = new Date(now.getTime() + 8 * 3600000);
+  const hm = tpe.toISOString().slice(11, 16);
+  const dow = tpe.getUTCDay(); // 0=Sun（台北日）
+  const active: string[] = [];
+  const weekday = dow >= 1 && dow <= 5;
+  if (weekday && hm >= '08:45' && hm < '13:45') active.push('txf-open');
+  if (weekday && hm >= '09:00' && hm < '13:30') active.push('tw-open');
+  if (weekday && hm >= '15:00') active.push('txf-night');           // 15:00-24:00
+  if (hm < '05:00' && dow >= 2 && dow <= 6) active.push('txf-night'); // 00:00-05:00（前一日夜盤）
+  // 美股：台北 21:30/22:30 - 04:00/05:00
+  const dst = isUsDst(now);
+  const usOpenHM = dst ? '21:30' : '22:30';
+  const usCloseHM = dst ? '04:00' : '05:00';
+  if (hm >= usOpenHM && weekday) active.push('us-open');
+  if (hm < usCloseHM && dow >= 2 && dow <= 6) active.push('us-open');
+  return active;
+}
 
 function nextOccurrence(s: SessionDef, now: Date): Date {
   for (let add = 0; add < 8; add++) {
@@ -340,38 +362,52 @@ export function SessionClock() {
   const rows = SESSIONS.map(s => {
     const next = nextOccurrence(s, now);
     const diff = next.getTime() - now.getTime();
-    const live = diff < 0 && diff > -3600000;
-    return { ...s, next, diff, live };
-  }).sort((a, b) => a.diff - b.diff);
+    return { ...s, next, diff, live: false };
+  }); // 固定邏輯順序，不再依倒數排序
+  const active = activeSessions(now);
+  const order = ['txf-open', 'txf-close', 'txf-night', 'txf-night-close', 'tw-open', 'tw-close', 'us-open', 'us-close'];
+  rows.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
 
   const nowICT = new Date(now.getTime() + 7 * 3600000);
+  const nowTPE = new Date(now.getTime() + 8 * 3600000);
+  const nowEDT = new Date(now.getTime() - (isUsDst(now) ? 4 : 5) * 3600000);
+  const wk = ['日', '一', '二', '三', '四', '五', '六'][nowTPE.getUTCDay()];
 
   return (
     <div className="panel" style={{ padding: 16 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 12, flexWrap: 'wrap' }}>
-        <div className="panel-title" style={{ marginBottom: 0 }}>⏱️ 關鍵時段倒數（越南時間 ICT）</div>
-        <div style={{ color: '#e6edf3', fontSize: 15, fontVariantNumeric: 'tabular-nums' }}>
-          {nowICT.toISOString().slice(11, 19)} ICT
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4, flexWrap: 'wrap', gap: 6 }}>
+        <div className="panel-title" style={{ marginBottom: 0 }}>⏱️ 關鍵時段倒數（固定順序 ①→⑧）</div>
+        <div style={{ color: '#e6edf3', fontSize: 14, fontVariantNumeric: 'tabular-nums', textAlign: 'right', lineHeight: 1.5 }}>
+          <span>🕐 現在：ICT {nowICT.toISOString().slice(11, 19)}</span>
+          <span style={{ color: '#6b7280' }}> ｜ 台北 {nowTPE.toISOString().slice(11, 19)}（週{wk}）｜ 美東 {nowEDT.toISOString().slice(11, 19)}</span>
         </div>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
-        {rows.map(r => (
+      <div style={{ color: '#8b949e', fontSize: 12, marginBottom: 12 }}>
+        進行中的時段會亮🔴「進行中」；倒數以「下一次」發生的時間計算（跳過週末）
+      </div>
+      <div className="scroll-x">
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10, minWidth: 420 }}>
+        {rows.map(r => {
+          const isLive = active.includes(r.id);
+          return (
           <div key={r.id} style={{
-            background: r.live ? '#1a1200' : '#0d1117', borderRadius: 8, padding: '10px 12px',
-            border: r.live ? '1px solid #f97316' : '1px solid #21262d',
+            background: isLive ? '#1a1200' : '#0d1117', borderRadius: 8, padding: '10px 12px',
+            border: isLive ? '1px solid #f97316' : '1px solid #21262d',
           }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ color: '#e6edf3', fontWeight: 700, fontSize: 14 }}>
-                {r.live && '🔴 '}{r.name}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 6 }}>
+              <span style={{ color: '#e6edf3', fontWeight: 700, fontSize: 14, whiteSpace: 'nowrap' }}>
+                {isLive && '🔴 '}{r.name}
               </span>
-              <span style={{ color: '#8b949e', fontSize: 12 }}>{fmtICT(r.next)} ICT</span>
+              <span style={{ color: '#8b949e', fontSize: 11, whiteSpace: 'nowrap' }}>台北 {fmtICT(r.next)}</span>
             </div>
-            <div style={{ color: r.live ? '#f97316' : '#d29922', fontSize: 15, fontWeight: 700, fontVariantNumeric: 'tabular-nums', marginTop: 2 }}>
-              {r.live ? '進行中' : countdown(r.diff)}
+            <div style={{ color: isLive ? '#f97316' : '#d29922', fontSize: 15, fontWeight: 700, fontVariantNumeric: 'tabular-nums', marginTop: 2 }}>
+              {isLive ? '進行中' : countdown(r.diff)}
             </div>
             <div style={{ color: '#8b949e', fontSize: 11, marginTop: 2 }}>{r.note}</div>
           </div>
-        ))}
+          );
+        })}
+      </div>
       </div>
       <div style={{ marginTop: 10, fontSize: 13, color: '#8b949e' }}>
         📌 下個台指期結算日：<b style={{ color: '#e6edf3' }}>{settle.toISOString().slice(0, 10)}（週三）</b>，還有 {settleDays} 天

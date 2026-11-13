@@ -17,22 +17,14 @@ export default function Home() {
       fontSize: 15,
     }}>
       {/* ── 頂部導覽列 ── */}
-      <nav style={{
-        background: '#161b22', borderBottom: '1px solid #21262d',
-        padding: '0 28px', display: 'flex', alignItems: 'center', gap: 20,
-        height: 60, position: 'sticky', top: 0, zIndex: 100,
-      }}>
-        <div style={{ fontWeight: 800, fontSize: 22, color: '#f97316', letterSpacing: 1, whiteSpace: 'nowrap' }}>
-          🎯 台指期駕駛艙
-        </div>
+      <nav className="top-nav">
+        <div className="nav-title">🎯 台指期駕駛艙</div>
         <div style={{ flex: 1 }} />
-        <div style={{ color: '#8b949e', fontSize: 13, whiteSpace: 'nowrap' }}>
-          對比設計版 · 一切圍繞台指期交易決策
-        </div>
+        <div className="nav-sub">對比設計版 · 一切圍繞台指期交易決策</div>
       </nav>
 
       {/* ── 主內容 ── */}
-      <div style={{ maxWidth: 1500, margin: '0 auto', padding: '20px 20px' }}>
+      <div className="main-wrap">
 
         {/* 大盤指數橫幅 */}
         <MarketBanner />
@@ -51,15 +43,16 @@ export default function Home() {
           {/* ④ 每日籌碼：散戶多空比(小台/微台)、PC OI、月選最大OI、法人淨部位、基差結構 */}
           <ChipsDailyPanel />
 
-          {/* ⑤ 兩欄：大盤分時/貢獻度 + 籌碼/行事曆 */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 16, alignItems: 'start' }}>
+          {/* ⑤ 兩欄（手機自動變單欄）：大盤分時/貢獻度 + 籌碼/行事曆 */}
+          <div className="two-col">
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <IndexChart />
               <ContributionPanel />
+              {/* 行事曆移到左欄底部，平衡兩欄高度、消除大空白 */}
+              <CalendarPanel code="2330" name="台積電" market="TW" />
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <InstitutionsPanel />
-              <CalendarPanel code="2330" name="台積電" market="TW" />
             </div>
           </div>
 

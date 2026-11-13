@@ -9,6 +9,7 @@
 html, body {
   background-color: #0d1117;
   color: #e6edf3;
+  -webkit-text-size-adjust: 100%;
 }
 
 ::-webkit-scrollbar {
@@ -27,6 +28,7 @@ html, body {
   background: #161b22;
   border: 1px solid #21262d;
   border-radius: 10px;
+  overflow-wrap: break-word;
 }
 
 .panel-title {
@@ -38,3 +40,77 @@ html, body {
   margin-bottom: 12px;
 }
 
+/* ══ RWD：兩欄版面在手機自動變單欄 ══ */
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 360px;
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .two-col {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ══ 主容器：手機縮小 padding ══ */
+.main-wrap {
+  max-width: 1500px;
+  margin: 0 auto;
+  padding: 20px 20px;
+}
+@media (max-width: 600px) {
+  .main-wrap {
+    padding: 10px 10px;
+  }
+}
+
+/* ══ 導覽列：手機縮小 ══ */
+.top-nav {
+  background: #161b22;
+  border-bottom: 1px solid #21262d;
+  padding: 0 28px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  height: 60px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.top-nav .nav-title {
+  font-weight: 800;
+  font-size: 22px;
+  color: #f97316;
+  letter-spacing: 1px;
+  white-space: nowrap;
+}
+.top-nav .nav-sub {
+  color: #8b949e;
+  font-size: 13px;
+  white-space: nowrap;
+}
+@media (max-width: 600px) {
+  .top-nav {
+    padding: 0 12px;
+    height: 50px;
+    gap: 10px;
+  }
+  .top-nav .nav-title { font-size: 16px; }
+  .top-nav .nav-sub { display: none; }
+}
+
+/* ══ 表格類元件手機可橫向捲動，不再擠壓 ══ */
+.scroll-x {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ══ AI 專欄大字手機縮小 ══ */
+.verdict-action {
+  font-size: 30px;
+  font-weight: 900;
+}
+@media (max-width: 600px) {
+  .verdict-action { font-size: 20px; }
+}

@@ -12,10 +12,14 @@ interface NewsItem {
 const GOOGLE_QUERIES: { q: string; category: NewsItem['category'] }[] = [
   { q: '台指期', category: '台股' },
   { q: '台股 OR 台積電 盤勢', category: '台股' },
-  { q: 'Fed OR 美國聯準會 OR 降息', category: '國際' },
+  // ── 重大個股/產業事件（教訓：黃仁勳辭職、NVDA 崩跌 19% 竟被漏掉）──
+  { q: '黃仁勳 OR 輝達 OR NVIDIA OR 台積電', category: '國際' },
+  { q: '費城半導體 OR AI 晶片 OR 半導體 股價', category: '國際' },
+  { q: 'Fed OR 美國聯準會 OR 降息 OR 升息', category: '國際' },
   { q: '日銀 OR 日本央行 OR 升息', category: '國際' },
   { q: '美債 OR 美國公債 殖利率', category: '國際' },
   { q: '台幣 OR 新台幣 匯率', category: '國際' },
+  { q: '關稅 OR 戰爭 OR 地緣政治 市場', category: '國際' },
 ];
 
 function parseRss(xml: string, source: string, category: NewsItem['category'], limit: number): NewsItem[] {
@@ -100,8 +104,8 @@ export async function GET(req: NextRequest) {
 
   const jobs: Promise<NewsItem[]>[] = [];
   if (tab === 'all' || tab === 'tw') {
-    jobs.push(fetchGoogleNews('台指期', '台股', 6));
-    jobs.push(fetchGoogleNews('台股 OR 台積電 盤勢', '台股', 6));
+    jobs.push(fetchGoogleNews(GOOGLE_QUERIES[0].q, '台股', 6));
+    jobs.push(fetchGoogleNews(GOOGLE_QUERIES[1].q, '台股', 6));
     jobs.push(fetchYahooFinance(10));
   }
   if (tab === 'all' || tab === 'global') {

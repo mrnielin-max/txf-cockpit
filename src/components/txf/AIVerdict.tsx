@@ -6,27 +6,32 @@ import { useEffect, useState } from 'react';
 // ════════════════════════════════════════════════════════════
 
 interface Factor { key: string; label: string; score: number; detail: string; }
+interface NewsAlert { title: string; keyword: string; source: string; }
 interface Verdict {
   ok: boolean;
   generatedAt: string;
+  phase: { phase: string; label: string; isWeekend: boolean; dow: number; hm: string; nextIsToday: boolean; nextTradeDate: string };
   data: {
     spot: number | null; frontLast: number | null; basis: number | null; basisPct: number | null;
     chips: { date: string; miniPct: number | null; foreignNetOI: number | null; foreignChg: number | null } | null;
-    spxLastChgPct: number | null; vix: number | null; tsmChgPct: number | null; a50ChgPct: number | null;
+    spxLastChgPct: number | null; vix: number | null; tsmChgPct: number | null; nvdaChgPct: number | null; nvda10dChgPct: number | null; a50ChgPct: number | null;
     marginBalance: number | null; marginChg: number | null; last5RetPct: number;
-    todayLow: number | null; todayLowTime: string | null;
+    todayLow: number | null; todayLowTime: string | null; todayHigh: number | null;
   };
   factors: Factor[];
-  totalScore: number; maxScore: number;
+  totalScore: number; maxScore: number; scoreRatio: number;
+  band: { label: string; color: string };
+  newsAlerts: NewsAlert[];
   sim: {
     n: number; horizon: number;
     up5Prob: number; down5Prob: number; day1UpProb: number; expected5dPct: number;
     p10: number; p50: number; p90: number;
+    p10Pts: number | null; p50Pts: number | null; p90Pts: number | null;
     rangeLowPts: number | null; rangeHighPts: number | null;
   };
   lowForecast: { text: string; window: string; passed: boolean };
   sqDate: string;
-  verdict: { action: string; actionColor: string; confidence: string; lines: string[] };
+  verdict: { action: string; actionColor: string; confidence: string; lines: string[]; dir: string };
   stats: {
     sample: string;
     weekdayUpProb: number[];
@@ -67,7 +72,7 @@ export default function AIVerdict() {
   if (!v) return (
     <div className="panel" style={{ padding: 16 }}>
       <div className="panel-title">🤖 AI 決策引擎 · 多因子模擬評估</div>
-      <div style={{ color: '#8b949e' }}>正在整合 10 大因子並執行 10,000 次蒙地卡羅模擬（約 10 秒）...</div>
+      <div style={{ color: '#8b949e' }}>正在整合 12 大因子並執行 10,000 次蒙地卡羅模擬（約 10 秒）...</div>
     </div>
   );
 
@@ -79,17 +84,46 @@ export default function AIVerdict() {
       {/* 標題列 */}
       <div style={{ padding: '14px 20px', background: 'linear-gradient(90deg, #161b22, #0d1117)', borderBottom: '1px solid #21262d', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
         <div style={{ fontSize: 17, fontWeight: 800, color: '#e6edf3' }}>🤖 AI 決策引擎 · 多因子模擬評估</div>
-        <div style={{ color: '#6b7280', fontSize: 12 }}>
-          {new Date(v.generatedAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })}（台北）｜每 5 分鐘自動更新｜樣本 {v.stats.sample}
+        <div style={{ color: '#6b7280', fontSize: 12, textAlign: 'right' }}>
+          {(() => {
+            const g = new Date(v.generatedAt);
+            const fmt = (tz: string) => g.toLocaleTimeString('zh-TW', { timeZone: tz, hour12: false });
+            return <>台北 {fmt('Asia/Taipei')} ｜ 越南 {fmt('Asia/Ho_Chi_Minh')} ｜ 美東 {fmt('America/New_York')}</>;
+          })()}
+          <br />每 5 分鐘自動更新｜樣本 {v.stats.sample}
         </div>
       </div>
+
+      {/* 當下時段（台北時間偵測） */}
+      <div style={{ padding: '10px 20px', background: '#0d1117', borderBottom: '1px solid #21262d', display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <span style={{ color: '#f97316', fontWeight: 800, fontSize: 14 }}>
+          {v.phase.isWeekend ? '🔵' : '🔴'} 現在時段：{v.phase.label}
+        </span>
+        <span style={{ color: '#8b949e', fontSize: 13 }}>
+          台北 {v.phase.hm}｜下個交易日：{v.phase.nextTradeDate}
+        </span>
+      </div>
+
+      {/* 重大事件警示 */}
+      {v.newsAlerts.length > 0 && (
+        <div style={{ padding: '12px 20px', background: '#2a1215', borderBottom: '1px solid #f8514955' }}>
+          <div style={{ color: '#f85149', fontWeight: 800, fontSize: 14, marginBottom: 6 }}>⚠️ 重大事件警示（近 3 日新聞關鍵字掃描，{v.newsAlerts.length} 則命中）</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {v.newsAlerts.slice(0, 6).map((n, i) => (
+              <div key={i} style={{ color: '#ffc1bc', fontSize: 12.5, lineHeight: 1.5 }}>
+                <b style={{ color: '#f85149' }}>[{n.keyword}]</b> <span style={{ color: '#8b949e' }}>({n.source})</span> {n.title}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 大結論 */}
       <div style={{ padding: '18px 20px', background: `${vd.actionColor}11`, borderBottom: '1px solid #21262d' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
-          <div style={{ fontSize: 30, fontWeight: 900, color: vd.actionColor }}>{vd.action}</div>
+          <div className="verdict-action" style={{ color: vd.actionColor }}>{vd.action}</div>
           <div style={{ background: '#0d1117', borderRadius: 10, padding: '8px 16px', border: '1px solid #30363d' }}>
-            <div style={{ color: '#8b949e', fontSize: 11 }}>綜合分數</div>
+            <div style={{ color: '#8b949e', fontSize: 11 }}>綜合分數 · {v.band.label}</div>
             <div style={{ fontSize: 22, fontWeight: 800, color: scoreColor(v.totalScore), fontVariantNumeric: 'tabular-nums' }}>
               {v.totalScore > 0 ? '+' : ''}{v.totalScore} <span style={{ fontSize: 12, color: '#6b7280' }}>/ ±{v.maxScore}</span>
             </div>
@@ -103,8 +137,20 @@ export default function AIVerdict() {
             <div style={{ fontSize: 22, fontWeight: 800, color: '#3fb950', fontVariantNumeric: 'tabular-nums' }}>{sim.down5Prob}%</div>
           </div>
           <div style={{ background: '#0d1117', borderRadius: 10, padding: '8px 16px', border: '1px solid #30363d' }}>
-            <div style={{ color: '#8b949e', fontSize: 11 }}>明日上漲機率</div>
+            <div style={{ color: '#8b949e', fontSize: 11 }}>{v.phase.nextIsToday ? '今日' : v.phase.nextTradeDate.slice(0, 12)}上漲機率</div>
             <div style={{ fontSize: 22, fontWeight: 800, color: sim.day1UpProb >= 50 ? '#f85149' : '#3fb950', fontVariantNumeric: 'tabular-nums' }}>{sim.day1UpProb}%</div>
+          </div>
+        </div>
+        {/* 分數刻度條 */}
+        <div style={{ marginTop: 14 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', color: '#6b7280', fontSize: 11, marginBottom: 3 }}>
+            <span>−{v.maxScore} 強勢看空</span><span>0 中性</span><span>+{v.maxScore} 強勢看多</span>
+          </div>
+          <div style={{ position: 'relative', height: 10, borderRadius: 5, background: 'linear-gradient(90deg, #3fb950, #58a6ff, #d29922, #f0883e, #f85149)' }}>
+            <div style={{ position: 'absolute', top: -4, width: 4, height: 18, borderRadius: 2, background: '#fff', boxShadow: '0 0 6px #000', left: `calc(${Math.min(100, Math.max(0, ((v.totalScore + v.maxScore) / (2 * v.maxScore)) * 100))}% - 2px)` }} />
+          </div>
+          <div style={{ color: '#8b949e', fontSize: 12, marginTop: 5 }}>
+            帶對應：≤−7 強勢看空｜−3~−6 偏空｜−2~+2 中性｜+3~+6 偏多｜≥+7 強勢看多（12 因子加總，每因子 +3~−3，每格都有歷史條件機率依據，見下方因子明細）
           </div>
         </div>
 
@@ -128,15 +174,15 @@ export default function AIVerdict() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
           <div style={{ background: '#0d1117', borderRadius: 8, padding: '8px 12px', border: '1px solid #21262d' }}>
             <div style={{ color: '#8b949e', fontSize: 11 }}>悲觀情境 P10</div>
-            <div style={{ color: '#3fb950', fontSize: 17, fontWeight: 800 }}>{sim.p10}%{sim.rangeLowPts ? `（≈${sim.rangeLowPts.toLocaleString()}點）` : ''}</div>
+            <div style={{ color: '#3fb950', fontSize: 17, fontWeight: 800 }}>{sim.p10}%{sim.p10Pts ? `（≈${sim.p10Pts.toLocaleString()}點）` : ''}</div>
           </div>
           <div style={{ background: '#0d1117', borderRadius: 8, padding: '8px 12px', border: '1px solid #21262d' }}>
             <div style={{ color: '#8b949e', fontSize: 11 }}>中位情境 P50</div>
-            <div style={{ color: '#d29922', fontSize: 17, fontWeight: 800 }}>{sim.p50 >= 0 ? '+' : ''}{sim.p50}%</div>
+            <div style={{ color: '#d29922', fontSize: 17, fontWeight: 800 }}>{sim.p50 >= 0 ? '+' : ''}{sim.p50}%{sim.p50Pts ? `（≈${sim.p50Pts.toLocaleString()}點）` : ''}</div>
           </div>
           <div style={{ background: '#0d1117', borderRadius: 8, padding: '8px 12px', border: '1px solid #21262d' }}>
             <div style={{ color: '#8b949e', fontSize: 11 }}>樂觀情境 P90</div>
-            <div style={{ color: '#f85149', fontSize: 17, fontWeight: 800 }}>+{sim.p90}%{sim.rangeHighPts ? `（≈${sim.rangeHighPts.toLocaleString()}點）` : ''}</div>
+            <div style={{ color: '#f85149', fontSize: 17, fontWeight: 800 }}>+{sim.p90}%{sim.p90Pts ? `（≈${sim.p90Pts.toLocaleString()}點）` : ''}</div>
           </div>
           <div style={{ background: '#0d1117', borderRadius: 8, padding: '8px 12px', border: '1px solid #21262d' }}>
             <div style={{ color: '#8b949e', fontSize: 11 }}>期望報酬</div>
@@ -147,7 +193,7 @@ export default function AIVerdict() {
             <div style={{ color: d.last5RetPct >= 0 ? '#f85149' : '#3fb950', fontSize: 17, fontWeight: 800 }}>{d.last5RetPct >= 0 ? '+' : ''}{d.last5RetPct.toFixed(2)}%</div>
           </div>
           <div style={{ background: '#0d1117', borderRadius: 8, padding: '8px 12px', border: '1px solid #21262d' }}>
-            <div style={{ color: '#8b949e', fontSize: 11 }}>下个 SQ 結算日</div>
+            <div style={{ color: '#8b949e', fontSize: 11 }}>下個 SQ 結算日</div>
             <div style={{ color: '#e6edf3', fontSize: 17, fontWeight: 800 }}>{v.sqDate || '--'}</div>
           </div>
         </div>
