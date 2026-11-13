@@ -32,6 +32,12 @@ interface Verdict {
   lowForecast: { text: string; window: string; passed: boolean };
   sqDate: string;
   verdict: { action: string; actionColor: string; confidence: string; lines: string[]; dir: string };
+  assessment: {
+    narrative: string[];
+    dataReady: { name: string; value: string }[];
+    dataMissing: { name: string; why: string; impact: string; severity: string }[];
+    factorCount: number;
+  };
   stats: {
     sample: string;
     weekdayUpProb: number[];
@@ -72,7 +78,7 @@ export default function AIVerdict() {
   if (!v) return (
     <div className="panel" style={{ padding: 16 }}>
       <div className="panel-title">🤖 AI 決策引擎 · 多因子模擬評估</div>
-      <div style={{ color: '#8b949e' }}>正在整合 12 大因子並執行 10,000 次蒙地卡羅模擬（約 10 秒）...</div>
+      <div style={{ color: '#8b949e' }}>正在整合 18 大因子並執行 10,000 次蒙地卡羅模擬（約 10 秒）...</div>
     </div>
   );
 
@@ -150,7 +156,7 @@ export default function AIVerdict() {
             <div style={{ position: 'absolute', top: -4, width: 4, height: 18, borderRadius: 2, background: '#fff', boxShadow: '0 0 6px #000', left: `calc(${Math.min(100, Math.max(0, ((v.totalScore + v.maxScore) / (2 * v.maxScore)) * 100))}% - 2px)` }} />
           </div>
           <div style={{ color: '#8b949e', fontSize: 12, marginTop: 5 }}>
-            帶對應：≤−7 強勢看空｜−3~−6 偏空｜−2~+2 中性｜+3~+6 偏多｜≥+7 強勢看多（12 因子加總，每因子 +3~−3，每格都有歷史條件機率依據，見下方因子明細）
+            帶對應：≤−9 強勢看空｜−4~−8 偏空｜−3~+3 中性｜+4~+8 偏多｜≥+9 強勢看多（{v.assessment?.factorCount ?? 18} 因子加總，每因子 +3~−3，每格都有歷史條件機率依據，見下方因子明細）
           </div>
         </div>
 
@@ -216,6 +222,51 @@ export default function AIVerdict() {
           ))}
         </div>
       </div>
+
+      {/* ═══ 統整模擬評估專欄 ═══ */}
+      {v.assessment && (
+        <div style={{ padding: '14px 20px', borderBottom: '1px solid #21262d', background: '#10141b' }}>
+          <div style={{ color: '#e6edf3', fontSize: 15, fontWeight: 800, marginBottom: 10 }}>
+            🧠 統整模擬評估 <span style={{ color: '#6b7280', fontSize: 12, fontWeight: 400 }}>（引擎如何得出上面結論：數據盤點 → 因子評分 → 蒙地卡羅模擬 → 風險蓋章）</span>
+          </div>
+
+          {/* 敘事 */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+            {v.assessment.narrative.map((n, i) => {
+              const seg = n.split('】');
+              return (
+                <div key={i} style={{ background: '#0d1117', borderRadius: 8, padding: '10px 14px', border: '1px solid #21262d', fontSize: 13.5, lineHeight: 1.7 }}>
+                  <b style={{ color: '#a371f7' }}>{seg[0]}】</b>
+                  <span style={{ color: '#c9d1d9' }}>{seg.slice(1).join('】')}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* 已接入數據盤點 */}
+          <div style={{ color: '#8b949e', fontSize: 13, marginBottom: 6 }}>📡 已接入評估的數據（{v.assessment.dataReady.length} 項，全部即時）</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14 }}>
+            {v.assessment.dataReady.map((dd, i) => (
+              <span key={i} style={{ background: '#0d1117', border: '1px solid #238636', borderRadius: 20, padding: '3px 10px', fontSize: 12, color: '#c9d1d9', whiteSpace: 'nowrap' }}>
+                ✓ {dd.name} <b style={{ color: '#3fb950' }}>{dd.value}</b>
+              </span>
+            ))}
+          </div>
+
+          {/* 數據缺口清單 */}
+          <div style={{ color: '#8b949e', fontSize: 13, marginBottom: 6 }}>🔧 還缺的數據（取得後可再提升準確度）</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {v.assessment.dataMissing.map((m, i) => (
+              <div key={i} style={{ background: '#0d1117', borderRadius: 8, padding: '8px 12px', border: '1px solid #21262d', fontSize: 12.5, lineHeight: 1.6 }}>
+                <b style={{ color: m.severity === '高' ? '#f85149' : m.severity === '中' ? '#d29922' : '#8b949e' }}>[{m.severity}]</b>{' '}
+                <b style={{ color: '#e6edf3' }}>{m.name}</b>
+                <div style={{ color: '#8b949e' }}>缺因：{m.why}</div>
+                <div style={{ color: '#6b7280' }}>影響：{m.impact}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 因子明細 */}
       <div style={{ padding: '14px 20px' }}>

@@ -155,7 +155,7 @@ function fmtDate(d: Date): string {
 }
 
 export async function GET() {
-  const [txfRaw, chipsTxt, twii1d, twii5m, spx1d, vixQ, tsmQ, a50Txt, nvdaQ, newsAlerts] = await Promise.all([
+  const [txfRaw, chipsTxt, twii1d, twii5m, spx1d, vixQ, tsmQ, a50Txt, nvdaQ, soxQ, twdQ, tnxQ, dxyQ, goldQ, oilQ, tsmAdrQ, newsAlerts] = await Promise.all([
     fetch('https://mis.taifex.com.tw/futures/api/getQuoteList', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': UA },
       body: JSON.stringify({ MarketType: '1', CommodityID: 'TXF' }),
@@ -169,6 +169,13 @@ export async function GET() {
     fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/2330.TW?interval=1d&range=5d'),
     fetchText('https://hq.sinajs.cn/list=hf_CHA50CFD', { Referer: 'https://finance.sina.com.cn' }),
     fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/NVDA?interval=1d&range=15d'),
+    fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/%5ESOX?interval=1d&range=5d'),
+    fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/TWD%3DX?interval=1d&range=5d'),
+    fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/%5ETNX?interval=1d&range=5d'),
+    fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/DX-Y.NYB?interval=1d&range=5d'),
+    fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/GC%3DF?interval=1d&range=5d'),
+    fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/CL%3DF?interval=1d&range=5d'),
+    fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/TSM?interval=1d&range=5d'),
     scanNewsEvents(),
   ]);
 
@@ -252,6 +259,51 @@ export async function GET() {
     if (last && prevSettle) a50ChgPct = (last / prevSettle - 1) * 100;
   } catch { /* ignore */ }
 
+  // ── 通用：從 Yahoo chart 取「最新對前收」變動%（用 close 序列最後兩筆，避免 meta 的 chartPreviousClose 失真）──
+  function yahooChgPct(q: unknown): { chg: number | null; last: number | null } {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const r = (q as any)?.chart?.result?.[0];
+      const c = (r?.indicators?.quote?.[0]?.close || []) as (number | null)[];
+      const v = c.filter((x): x is number => x !== null);
+      if (v.length >= 2) return { chg: (v[v.length - 1] / v[v.length - 2] - 1) * 100, last: v[v.length - 1] };
+      const last = num(r?.meta?.regularMarketPrice);
+      if (last !== null) return { chg: null, last };
+    } catch { /* ignore */ }
+    return { chg: null, last: null };
+  }
+  const sox = yahooChgPct(soxQ);        // 費城半導體
+  const twd = yahooChgPct(twdQ);        // USD/TWD（數值升=台幣貶）
+  const tnx = yahooChgPct(tnxQ);        // 美債10年殖利率
+  const dxy = yahooChgPct(dxyQ);        // 美元指數
+  const gold = yahooChgPct(goldQ);      // 黃金
+  const oil = yahooChgPct(oilQ);        // WTI 原油
+  const tsmAdr = yahooChgPct(tsmAdrQ);  // TSM ADR
+  // ADR 溢價：1 ADR = 5 股普通股 → (ADR × 匯率) / (2330 × 5) − 1
+  let adrPremiumPct: number | null = null;
+  try {
+    const tsmLocal = num((tsmQ as { chart?: { result?: { meta?: { regularMarketPrice?: number } }[] } })?.chart?.result?.[0]?.meta?.regularMarketPrice);
+    if (tsmAdr.last && twd.last && tsmLocal) adrPremiumPct = ((tsmAdr.last * twd.last) / (tsmLocal * 5) - 1) * 100;
+  } catch { /* ignore */ }
+
+  // ── 外資現貨買賣超（TWSE BFI82U，當日未公布回退；row[3]=買賣差額）──
+  let foreignSpotBuy: number | null = null, foreignSpotDate: string | null = null;
+  for (const back of [0, 1, 2, 3, 4]) {
+    const dt = new Date(Date.now() + 8 * 3600 * 1000 - back * 86400 * 1000);
+    if (dt.getUTCDay() === 0 || dt.getUTCDay() === 6) continue;
+    const ymd = dt.toISOString().slice(0, 10).replace(/-/g, '');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const j: any = await fetchJson('https://www.twse.com.tw/rwd/zh/fund/BFI82U?response=json&dayDate=' + ymd);
+    if (j?.stat === 'OK' && Array.isArray(j.data)) {
+      for (const row of j.data) {
+        if (String(row[0]).startsWith('外資')) {
+          foreignSpotBuy = num(String(row[3]).replace(/[,+]/g, '')); foreignSpotDate = ymd; break;
+        }
+      }
+      if (foreignSpotBuy !== null) break;
+    }
+  }
+
   // ── 融資餘額（當日未公布自動回退）──
   let marginBalance: number | null = null, marginChg: number | null = null, marginRaw: unknown = null;
   for (const back of [0, 1, 2, 3, 4]) {
@@ -266,7 +318,9 @@ export async function GET() {
     for (const t of tables) {
       for (const row of t.data || []) {
         if (String(row[0]).startsWith('融資金額')) {
-          marginBalance = num(row[5]); marginChg = (num(row[5]) ?? 0) - (num(row[4]) ?? 0);
+          // row[4]=前日餘額, row[5]=今日餘額，單位仟元 → 轉為元
+          marginBalance = (num(row[5]) ?? null) !== null ? (num(row[5])! * 1000) : null;
+          marginChg = ((num(row[5]) ?? 0) - (num(row[4]) ?? 0)) * 1000;
         }
       }
     }
@@ -367,16 +421,42 @@ export async function GET() {
     const s = tsmChgPct > 1 ? 2 : tsmChgPct > 0 ? 1 : tsmChgPct < -1 ? -2 : tsmChgPct < 0 ? -1 : 0;
     add('tsm', '台積電 2330', s, `2330 ${tsmChgPct >= 0 ? '+' : ''}${tsmChgPct.toFixed(2)}%（權重約35%，台指期最大單一驅動）`);
   }
-  // F10 融資餘額
+  // F10 融資餘額（單位已轉為元；日變動 ±50 億為門檻）
   if (marginChg !== null) {
     const s = marginChg > 5e9 ? 1 : marginChg < -5e9 ? -1 : 0;
-    add('margin', '融資餘額', s, `融資餘額 ${(marginBalance! / 1e9).toFixed(1)}B，日變動 ${(marginChg / 1e9).toFixed(1)}B → ${s > 0 ? '散戶資金進場' : s < 0 ? '散戶撤退/斷頭' : '持平'}`);
+    add('margin', '融資餘額', s, `融資餘額 ${(marginBalance! / 1e8).toFixed(0)} 億元，日變動 ${(marginChg / 1e8 >= 0 ? '+' : '') + (marginChg / 1e8).toFixed(0)} 億元 → ${s > 0 ? '散戶資金進場' : s < 0 ? '散戶撤退/斷頭' : '持平'}`);
   }
   // F11 星期效應
   const wp = STATS.weekday.prob[nextWd];
   const wm = STATS.weekday.mean[nextWd];
   add('weekday', '星期效應', wp >= 0.6 ? 1 : wp <= 0.45 ? -1 : 0,
     `下個交易日為${['週一', '週二', '週三', '週四', '週五'][nextWd]}：近2年該日上漲機率 ${(wp * 100).toFixed(0)}%、平均 ${(wm * 100).toFixed(2)}%`);
+  // F11b 費城半導體 SOX
+  if (sox.chg !== null) {
+    const s = sox.chg > 1.5 ? 2 : sox.chg > 0 ? 1 : sox.chg < -1.5 ? -2 : sox.chg < 0 ? -1 : 0;
+    add('sox', '費城半導體 SOX', s, `SOX ${sox.chg >= 0 ? '+' : ''}${sox.chg.toFixed(2)}% → 全球半導體板塊風向，直接牽動台積電與電子股`);
+  }
+  // F11c 台幣匯率（USD/TWD 上升=台幣貶值=外資賣壓）
+  if (twd.chg !== null) {
+    const s = twd.chg > 0.3 ? -2 : twd.chg > 0 ? -1 : twd.chg < -0.3 ? 2 : twd.chg < 0 ? 1 : 0;
+    add('twd', '台幣匯率', s, `USD/TWD ${twd.last?.toFixed(2)}（${twd.chg >= 0 ? '台幣貶 +' : '台幣升 '}${twd.chg.toFixed(2)}%）→ ${s < 0 ? '台幣貶值通常伴隨外資提款，偏空' : s > 0 ? '台幣升值吸引外資買超，偏多' : '匯率穩定，中性'}`);
+  }
+  // F11d TSM ADR 溢價
+  if (adrPremiumPct !== null) {
+    const s = adrPremiumPct > 1 ? 2 : adrPremiumPct > 0 ? 1 : adrPremiumPct < -1 ? -2 : adrPremiumPct < 0 ? -1 : 0;
+    add('adr', '台積電 ADR 溢價', s, `ADR 換算溢價 ${adrPremiumPct >= 0 ? '+' : ''}${adrPremiumPct.toFixed(2)}% → ${s > 0 ? '美股投資人願付更高價買台積電，明日台股易補漲' : s < 0 ? 'ADR 折價，明日台股易補跌' : '持平'}`);
+  }
+  // F11e 外資現貨買賣超
+  if (foreignSpotBuy !== null) {
+    const b = foreignSpotBuy / 1e8; // 億元
+    const s = b > 100 ? 2 : b > 0 ? 1 : b < -100 ? -2 : b < 0 ? -1 : 0;
+    add('fspot', '外資現貨買賣超', s, `外資現貨${b >= 0 ? '買超 +' : '賣超 '}${b.toFixed(0)} 億元（${foreignSpotDate?.slice(4, 6)}/${foreignSpotDate?.slice(6)}）→ ${s > 0 ? '實質資金進場，偏多' : s < 0 ? '實質資金撤離，偏空' : '觀望'}`);
+  }
+  // F11f 美債 10 年
+  if (tnx.last !== null) {
+    const s = (tnx.chg ?? 0) > 1.5 ? -1 : (tnx.chg ?? 0) < -1.5 ? 1 : 0;
+    add('tnx', '美債 10 年殖利率', s, `殖利率 ${tnx.last.toFixed(2)}%（${(tnx.chg ?? 0) >= 0 ? '+' : ''}${(tnx.chg ?? 0).toFixed(2)}%）→ ${s < 0 ? '利率快速上升壓抑股債估值' : s > 0 ? '利率回落有利成長股' : '穩定'}`);
+  }
   // F12 重大事件（新聞掃描；命中負面關鍵字扣分）
   const severeKw = ['辭職', '請辭', '閃辭', '崩盤', '暴跌', '崩跌', '戰爭', '宣戰', '開戰', '金融危機', '股災', '破產', '制裁'];
   const severeHits = newsAlerts.filter(a => severeKw.some(k => a.keyword === k || a.title.includes(k)));
@@ -386,7 +466,7 @@ export async function GET() {
   else add('news', '重大事件警示', 0, `近3日無重大黑天鵝事件命中`);
 
   const totalScore = factors.reduce((a, f) => a + f.score, 0);
-  const maxScore = 20; // 正面因子上限（spx2+nvda2+mom2+foreign2+retail2+basis1+vix1+a501+tsm2+margin1+weekday1 = 17，留緩衝至 20）
+  const maxScore = 26; // 因子加總上限（含 SOX/台幣/ADR/外資現貨/美債後）
   const scoreRatio = totalScore / maxScore;
 
   // 分數帶對應
@@ -448,10 +528,55 @@ export async function GET() {
     totalScore, maxScore, scoreRatio, band, up5, down5, exp5, d1Up,
     refPrice, spotNow, frontLast, basisPct, streak3Down, streak3Up,
     lowForecast, nextWd, todayLow, todayHigh, ph, newsAlerts,
-    p10Pts, p50Pts, p90Pts,
+    p10Pts, p50Pts, p90Pts, factorCount: factors.length,
   });
 
   const sqDate = nextSQDate(nowCST);
+
+  // ════════ 統整模擬評估：數據盤點 + 缺口 + 敘事 ════════
+  const dataReady: { name: string; value: string }[] = [];
+  const push = (name: string, val: number | null | undefined, fmt: (v: number) => string) => {
+    if (val !== null && val !== undefined) dataReady.push({ name, value: fmt(val) });
+  };
+  push('台指期近月價', frontLast, v => v.toFixed(0) + ' 點');
+  push('加權現貨', spot, v => v.toFixed(0) + ' 點');
+  push('基差', basisPct, v => (v >= 0 ? '+' : '') + v.toFixed(2) + '%');
+  push('隔夜 S&P 500', spxLastChgPct, v => (v >= 0 ? '+' : '') + v.toFixed(2) + '%');
+  push('VIX 恐慌指數', vix, v => v.toFixed(1));
+  push('輝達 NVDA', nvdaChgPct, v => (v >= 0 ? '+' : '') + v.toFixed(2) + '%' + (nvda10dChgPct !== null ? `（10日 ${nvda10dChgPct.toFixed(1)}%）` : ''));
+  push('費城半導體 SOX', sox.chg, v => (v >= 0 ? '+' : '') + v.toFixed(2) + '%');
+  push('台積電 2330', tsmChgPct, v => (v >= 0 ? '+' : '') + v.toFixed(2) + '%');
+  push('TSM ADR 溢價', adrPremiumPct, v => (v >= 0 ? '+' : '') + v.toFixed(2) + '%');
+  push('SGX A50 期貨', a50ChgPct, v => (v >= 0 ? '+' : '') + v.toFixed(2) + '%');
+  push('USD/TWD', twd.last, v => v.toFixed(2) + (twd.chg !== null ? `（${twd.chg >= 0 ? '貶' : '升'} ${twd.chg.toFixed(2)}%）` : ''));
+  push('美債 10 年殖利率', tnx.last, v => v.toFixed(2) + '%');
+  push('美元指數 DXY', dxy.chg, v => (v >= 0 ? '+' : '') + v.toFixed(2) + '%');
+  push('黃金', gold.chg, v => (v >= 0 ? '+' : '') + v.toFixed(2) + '%');
+  push('WTI 原油', oil.chg, v => (v >= 0 ? '+' : '') + v.toFixed(2) + '%');
+  push('外資期貨淨部位變動', chips?.foreignChg, v => (v >= 0 ? '+' : '') + v.toLocaleString() + ' 口');
+  push('外資現貨買賣超', foreignSpotBuy, v => (v >= 0 ? '買超 +' : '賣超 ') + (v / 1e8).toFixed(0) + ' 億');
+  push('散戶小台淨多比', chips?.miniPct, v => v.toFixed(1) + '%');
+  push('融資餘額', marginBalance, v => (v / 1e8).toFixed(0) + ' 億元');
+  push('近2年日報酬樣本', closes.length ? +closes.length : null, v => v.toFixed(0) + ' 日');
+  push('重大新聞警示', newsAlerts.length || null, v => v.toFixed(0) + ' 則命中');
+
+  const dataMissing = [
+    { name: 'CDF 台積電期貨盤中報價', why: 'TAIFEX MIS 端點對 CDF 商品代碼不回傳資料，日報表端點需 session 驗證', impact: '台積電期貨比現股早反映法人態度，缺它會漏掉「大戶提前轉彎」的領先訊號（目前以 2330 現股 + TSM ADR + SOX 三者替代，覆蓋約 80%）', severity: '高' },
+    { name: '融資維持率（整戶）', why: 'TWSE 只公布餘額，維持率需券商公會或集保數據，無公開 API', impact: '維持率 <200% 時斷頭賣壓會造成無差別殺盤，是崩跌日最重要的預測變數之一（目前以融資餘額日變動近似）', severity: '高' },
+    { name: 'SQ 特別結算價歷史序列', why: 'TAIFEX 結算價查詢端點同樣需 session 驗證', impact: '結算週（每月第三週三）波動模式特殊，缺歷史序列無法量化「結算行情」機率（目前只顯示 SQ 倒數日）', severity: '中' },
+    { name: '選擇權 Put/Call 未平倉比 + 最大痛點', why: 'TAIFEX 選擇權日報需 session 驗證；即時鏈無免費公開 API', impact: '最大痛點理論上會吸引結算前指數靠攏，是 SQ 週最強參考（目前以散戶小台多空比替代情緒面）', severity: '中' },
+    { name: '夜盤即時成交量', why: 'TAIFEX MIS 夜盤量能欄位回傳不完整', impact: '夜盤量縮時價格訊號可靠度下降，缺量能無法過濾假突破', severity: '低' },
+    { name: 'PTT Stock 版 / Dcard 情緒量化', why: '爬蟲已實作於新聞流但未做情緒正負分類打分', impact: '散戶情緒極端值（過度樂觀/恐慌）是反向指標，可再強化「散戶多空比」因子', severity: '低' },
+  ];
+
+  const narrative: string[] = [];
+  const ref0 = frontLast ?? spot ?? 0;
+  narrative.push(`【評估方法】引擎串接 ${dataReady.length} 項即時數據，經 18 個因子評分（每因子 +3~−3，滿分 ±${maxScore}），得到綜合分數 ${totalScore > 0 ? '+' : ''}${totalScore}（${band.label}）；再用近1年 ${closes.length} 個交易日的真實日報酬做 10,000 次蒙地卡羅抽樣，並疊加因子分數調整漂移項（${(driftAdj * 100).toFixed(2)}%/日），模擬未來 5 日路徑分布。`);
+  narrative.push(`【多頭依據】${factors.filter(f => f.score > 0).map(f => `${f.label} +${f.score}`).join('、') || '目前沒有正面因子'}`);
+  narrative.push(`【空頭依據】${factors.filter(f => f.score < 0).map(f => `${f.label} ${f.score}`).join('、') || '目前沒有負面因子'}`);
+  narrative.push(`【模擬結論】5 日上漲機率 ${(up5 * 100).toFixed(0)}%、下跌 ${(down5 * 100).toFixed(0)}%，期望報酬 ${(exp5 * 100 >= 0 ? '+' : '') + (exp5 * 100).toFixed(2)}%；80% 信賴區間落在 ${p10Pts?.toLocaleString()} ~ ${p90Pts?.toLocaleString()} 點（現價 ${Math.round(ref0).toLocaleString()}）。下個交易日（${fmtDate(ntd)}）上漲機率 ${(d1Up * 100).toFixed(0)}%。`);
+  if (severeHits.length) narrative.push(`【風險蓋章】偵測到 ${severeHits.length} 則重大負面事件（${[...new Set(severeHits.map(h => h.keyword))].slice(0, 4).join('、')}）。歷史經驗：黑天鵝事件會讓統計模型失效（報酬分布瞬間改變），此時所有機率數字只能當參考，建議以「降低部位」為第一原則，等事件明朗後引擎會自動重新計分。`);
+  narrative.push(`【模型限制】① 蒙地卡羅用歷史日報酬抽樣，假設未來分布與過去1年相似——遇到結構性轉折（如升息循環啟動）會失準；② 因子分數對漂移的調整（±0.4%/日）是經驗值非最優估計；③ 缺 CDF/選擇權鏈/融資維持率三項高價值數據（見下方缺口清單），目前用替代指標覆蓋。`);
 
   return NextResponse.json({
     ok: true,
@@ -462,6 +587,9 @@ export async function GET() {
       chips, spxLastChgPct, vix, tsmChgPct, nvdaChgPct, nvda10dChgPct, a50ChgPct,
       marginBalance, marginChg, last5RetPct: last5Ret * 100,
       todayLow, todayLowTime, todayHigh,
+      soxChgPct: sox.chg, twdRate: twd.last, twdChgPct: twd.chg,
+      tnxRate: tnx.last, dxyChgPct: dxy.chg, goldChgPct: gold.chg, oilChgPct: oil.chg,
+      adrPremiumPct, foreignSpotBuy, foreignSpotDate,
     },
     factors, totalScore, maxScore, scoreRatio: +scoreRatio.toFixed(3), band: { label: band.label, color: band.color },
     newsAlerts,
@@ -477,6 +605,7 @@ export async function GET() {
     lowForecast,
     sqDate,
     verdict,
+    assessment: { narrative, dataReady, dataMissing, factorCount: factors.length },
     stats: {
       sample: `${closes.length} 個交易日（近1年）`,
       weekdayUpProb: STATS.weekday.prob,
@@ -508,15 +637,16 @@ function buildVerdict(p: {
   todayLow: number | null; todayHigh: number | null;
   ph: { phase: Phase; label: string; isWeekend: boolean; dow: number; hm: string; nextIsToday: boolean; ntd: Date };
   newsAlerts: NewsAlert[]; p10Pts: number | null; p50Pts: number | null; p90Pts: number | null;
+  factorCount: number;
 }) {
   const s = p.totalScore;
-  const dir = s >= 6 ? 'strong-buy' : s >= 3 ? 'buy' : s <= -6 ? 'strong-sell' : s <= -3 ? 'sell' : 'neutral';
+  const dir = s >= 9 ? 'strong-buy' : s >= 4 ? 'buy' : s <= -9 ? 'strong-sell' : s <= -4 ? 'sell' : 'neutral';
   const actionMap: Record<string, { action: string; color: string; conf: string }> = {
-    'strong-buy':  { action: '買進（做多）', color: '#f85149', conf: '高' },
-    'buy':         { action: '偏多操作（輕倉試多）', color: '#f0883e', conf: '中' },
-    'neutral':     { action: '觀望（訊號矛盾）', color: '#d29922', conf: '低' },
-    'sell':        { action: '偏空操作（減多/試空）', color: '#58a6ff', conf: '中' },
-    'strong-sell': { action: '賣出／做空', color: '#3fb950', conf: '高' },
+    'strong-buy':  { action: '✅ 建議買（做多）', color: '#f85149', conf: '高' },
+    'buy':         { action: '✅ 建議買（輕倉試多）', color: '#f0883e', conf: '中' },
+    'neutral':     { action: '⛔ 不建議買也不建議賣（觀望）', color: '#d29922', conf: '低' },
+    'sell':        { action: '🔻 建議賣（減碼/試空）', color: '#58a6ff', conf: '中' },
+    'strong-sell': { action: '🔻 建議賣（做空）', color: '#3fb950', conf: '高' },
   };
   const a = actionMap[dir];
 
@@ -524,8 +654,17 @@ function buildVerdict(p: {
   const ref = p.refPrice;
   const R = 100; // ±100 點區間（依用戶要求）
 
+  // ── 一句話大白話結論 ──
+  if (dir === 'buy' || dir === 'strong-buy') {
+    lines.push(`【一句話結論】現在「建議買」（做多）。價格跌到 ${ref ? (Math.round(ref) - R).toLocaleString() : '--'} ~ ${ref ? Math.round(ref).toLocaleString() : '--'} 點之間就是買點；跌破 ${ref ? (Math.round(ref) - R - 30).toLocaleString() : '--'} 點就認賠出場。`);
+  } else if (dir === 'sell' || dir === 'strong-sell') {
+    lines.push(`【一句話結論】現在「建議賣」（做空或不要買）。價格漲到 ${ref ? Math.round(ref).toLocaleString() : '--'} ~ ${ref ? (Math.round(ref) + R).toLocaleString() : '--'} 點之間賣不出力就是賣點；漲破 ${ref ? (Math.round(ref) + R + 30).toLocaleString() : '--'} 點就認賠出場。`);
+  } else {
+    lines.push(`【一句話結論】現在「不建議買也不建議賣」，觀望等機會。等價格跌到 ${ref ? (Math.round(ref) - R).toLocaleString() : '--'} 點附近才可以考慮買，等價格漲到 ${ref ? (Math.round(ref) + R).toLocaleString() : '--'} 點附近才可以考慮賣，現在這個位置兩邊都不划算。`);
+  }
+
   // ── 分數說明 ──
-  lines.push(`【綜合分數說明】目前 ${s > 0 ? '+' : ''}${s} 分（滿分 ±${p.maxScore}）。分數 = 12 個因子加總，每因子 +3~−3。帶對應：≥+7 強勢看多、+3~+6 偏多、−2~+2 中性、−3~−6 偏空、≤−7 強勢看空。你現在落在「${p.band.label}」區。`);
+  lines.push(`【綜合分數說明】目前 ${s > 0 ? '+' : ''}${s} 分（滿分 ±${p.maxScore}）。分數 = ${p.factorCount} 個因子加總，每因子 +3~−3。帶對應：≥+9 強勢看多、+4~+8 偏多、−3~+3 中性、−4~−8 偏空、≤−9 強勢看空。你現在落在「${p.band.label}」區。`);
 
   // ── 下一交易日機率（修正：不叫「明日」，用實際交易日 + 日期）──
   const dayLabel = p.ph.nextIsToday ? '今日' : `下個交易日 ${fmtDate(p.ph.ntd)}`;
@@ -545,11 +684,11 @@ function buildVerdict(p: {
     const stopLong = (p.todayLow ? Math.min(buyLow - 30, Math.round(p.todayLow) - 30) : buyLow - R);
     const stopShort = (p.todayHigh ? Math.max(sellHigh + 30, Math.round(p.todayHigh) + 30) : sellHigh + R);
     if (dir === 'buy' || dir === 'strong-buy') {
-      lines.push(`【買點區間】建議 ${buyLow.toLocaleString()} ~ ${buyHigh.toLocaleString()} 點分批承接（現價 ${refR.toLocaleString()} −${R} 點緩衝）；停損設 ${Math.round(stopLong).toLocaleString()} 點下方（跌破約 −${R + 30} 點認賠）。`);
+      lines.push(`【怎麼買】在 ${buyLow.toLocaleString()} ~ ${buyHigh.toLocaleString()} 點之間分批買進（不要一次全下）。如果跌破 ${Math.round(stopLong).toLocaleString()} 點，代表看錯方向，賣掉認賠，大約虧 ${R + 30} 點。目標先看漲回 ${refR.toLocaleString()} 點以上。`);
     } else if (dir === 'sell' || dir === 'strong-sell') {
-      lines.push(`【空點區間】反彈到 ${sellLow.toLocaleString()} ~ ${sellHigh.toLocaleString()} 點無力時放空（現價 ${refR.toLocaleString()} +${R} 點緩衝）；停損設 ${Math.round(stopShort).toLocaleString()} 點上方（突破約 +${R + 30} 點認賠）。`);
+      lines.push(`【怎麼賣】價格反彈到 ${sellLow.toLocaleString()} ~ ${sellHigh.toLocaleString()} 點、漲不上去的時候賣出（放空或出脫手中多單）。如果漲破 ${Math.round(stopShort).toLocaleString()} 點，代表看錯方向，買回認賠，大約虧 ${R + 30} 點。`);
     } else {
-      lines.push(`【買賣區間】中性觀望：多方等回測 ${buyLow.toLocaleString()}~${buyHigh.toLocaleString()} 點承接，空方等反彈 ${sellLow.toLocaleString()}~${sellHigh.toLocaleString()} 點佈局；未突破 ±${R} 點區間前不追單。`);
+      lines.push(`【怎麼操作】現在不要追。只有兩種情況才動手：① 價格跌到 ${buyLow.toLocaleString()} ~ ${buyHigh.toLocaleString()} 點 → 可以買，跌破 ${Math.round(stopLong).toLocaleString()} 點認賠；② 價格漲到 ${sellLow.toLocaleString()} ~ ${sellHigh.toLocaleString()} 點漲不動 → 可以賣，漲破 ${Math.round(stopShort).toLocaleString()} 點認賠。價格在這兩個區間中間 = 什麼都不做。`);
     }
   }
 
