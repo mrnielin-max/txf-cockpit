@@ -99,6 +99,33 @@ async function fetchPttStock(limit: number): Promise<NewsItem[]> {
   }
 }
 
+// ── 各大社群／討論區（用戶要求：不只 PTT，含脆 Threads、X、FB、IG、抖音、Mobile01、Dcard）──
+// 透過 Google News site: 搜尋抓各平台被媒體收錄的公開討論內容
+const SOCIAL_SITES: { site: string; label: string }[] = [
+  { site: 'threads.net', label: 'Threads(脆)' },
+  { site: 'x.com OR twitter.com', label: 'X(推特)' },
+  { site: 'facebook.com', label: 'FB' },
+  { site: 'instagram.com', label: 'IG' },
+  { site: 'tiktok.com', label: '抖音/TikTok' },
+  { site: 'mobile01.com', label: 'Mobile01' },
+  { site: 'dcard.tw', label: 'Dcard' },
+];
+
+async function fetchSocial(site: string, label: string, limit: number): Promise<NewsItem[]> {
+  try {
+    const q = `(台股 OR 台指期 OR 台積電 OR 大盤) site:${site}`;
+    const url = `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant`;
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+      next: { revalidate: 900 },
+    });
+    const xml = await res.text();
+    return parseRss(xml, label, '討論區', limit).map(i => ({ ...i, source: label }));
+  } catch {
+    return [];
+  }
+}
+
 export async function GET(req: NextRequest) {
   const tab = req.nextUrl.searchParams.get('tab') || 'all';
 
@@ -115,6 +142,9 @@ export async function GET(req: NextRequest) {
   }
   if (tab === 'all' || tab === 'forum') {
     jobs.push(fetchPttStock(12));
+    for (const s of SOCIAL_SITES) {
+      jobs.push(fetchSocial(s.site, s.label, tab === 'forum' ? 8 : 4));
+    }
   }
 
   const results = await Promise.all(jobs);
