@@ -4,9 +4,8 @@ import { useEffect, useState, useCallback } from 'react';
 
 // ════════════════════════════════════════════════════════════
 // 建議紀錄專欄：每整點/每半點自動記錄當下建議（買/賣/觀望、區間、平倉條件）
-// 記錄存 localStorage（瀏覽器本機），跨重整保留
+// 記錄存「雲端線上庫」（/api/advice-log → JSON bin），任何裝置開啟都查得到
 // ════════════════════════════════════════════════════════════
-
 interface SnapRecord {
   slot: string;        // "2026-11-14 22:30"
   ts: string;          // 完整時間
@@ -20,19 +19,11 @@ interface SnapRecord {
   drivers: string;
 }
 
-const LS_KEY = 'txf-co…g-v1';
-
-function loadRecords(): SnapRecord[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    return JSON.parse(localStorage.getItem(LS_KEY) || '[]');
-  } catch { return []; }
-}
-
 export default function AdviceLog() {
   const [records, setRecords] = useState<SnapRecord[]>([]);
   const [current, setCurrent] = useState<SnapRecord | null>(null);
   const [expanded, setExpanded] = useState(false);
+  const [cloudOk, setCloudOk] = useState<boolean | null>(null);
 
   const fetchSnap = useCallback(async () => {
     try {
@@ -40,22 +31,44 @@ export default function AdviceLog() {
       if (!r.ok) return;
       const d = (await r.json()) as SnapRecord;
       setCurrent(d);
-      // 存檔：同 slot 覆蓋，最多保留 200 筆
-      setRecords(prev => {
-        const next = [d, ...prev.filter(x => x.slot !== d.slot)].slice(0, 200);
-        try { localStorage.setItem(LS_KEY, JSON.stringify(next)); } catch { /* ignore */ }
-        return next;
+      // 上傳雲端存檔（同 slot 覆蓋，伺服器端保留 300 筆）
+      const p = await fetch('/api/advice-log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(d),
       });
+      if (p.ok) {
+        const res = await p.json();
+        if (res.ok && Array.isArray(res.records)) {
+          setRecords(res.records);
+          setCloudOk(true);
+          return;
+        }
+      }
+      setCloudOk(false);
+    } catch { /* ignore */ }
+  }, []);
+
+  const loadCloud = useCallback(async () => {
+    try {
+      const r = await fetch('/api/advice-log', { cache: 'no-store' });
+      if (!r.ok) return;
+      const d = await r.json();
+      if (d.ok && Array.isArray(d.records)) {
+        setRecords(d.records);
+        setCloudOk(true);
+      }
     } catch { /* ignore */ }
   }, []);
 
   useEffect(() => {
-    setRecords(loadRecords());
+    loadCloud();
     fetchSnap();
-    // 每 60 秒檢查是否進入新的半點 slot
+    // 每 60 秒檢查是否進入新的半點 slot；每 5 分鐘同步雲端紀錄（跨裝置查詢）
     const timer = setInterval(fetchSnap, 60_000);
-    return () => clearInterval(timer);
-  }, [fetchSnap]);
+    const sync = setInterval(loadCloud, 300_000);
+    return () => { clearInterval(timer); clearInterval(sync); };
+  }, [fetchSnap, loadCloud]);
 
   const dirColor = (dir: string) => dir === '多' ? '#f85149' : dir === '空' ? '#3fb950' : '#d29922';
 
@@ -65,7 +78,11 @@ export default function AdviceLog() {
     <div style={{ background: '#161b22', border: '1px solid #30363d', borderRadius: 10, marginBottom: 16, overflow: 'hidden' }}>
       <div style={{ padding: '12px 20px', borderBottom: '1px solid #21262d', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
         <span style={{ color: '#e6edf3', fontSize: 15, fontWeight: 800 }}>🕐 每 30 分鐘建議紀錄</span>
-        <span style={{ color: '#6b7280', fontSize: 12 }}>整點/半點自動存檔（瀏覽器本機保留，最多 200 筆）· 每分鐘檢查新時段</span>
+        <span style={{ color: '#6b7280', fontSize: 12 }}>
+          整點/半點自動上傳雲端存檔（線上可查，跨裝置同步，最多 300 筆）
+          {cloudOk === true && <span style={{ color: '#3fb950' }}> · ☁️ 雲端已連線</span>}
+          {cloudOk === false && <span style={{ color: '#d29922' }}> · ⚠️ 雲端暫時無法寫入，稍後自動重試</span>}
+        </span>
       </div>
 
       {/* 當下最新建議 */}
@@ -86,10 +103,10 @@ export default function AdviceLog() {
         </div>
       )}
 
-      {/* 歷史紀錄表 */}
+      {/* 歷史紀錄表（雲端） */}
       <div style={{ padding: '10px 12px', overflowX: 'auto' }}>
         {records.length === 0 ? (
-          <div style={{ color: '#6b7280', fontSize: 13, padding: 8 }}>尚無歷史紀錄 — 每到整點/半點會自動新增一筆。</div>
+          <div style={{ color: '#6b7280', fontSize: 13, padding: 8 }}>載入雲端紀錄中… 每到整點/半點會自動上傳一筆，任何裝置開啟本頁都查得到。</div>
         ) : (
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5, minWidth: 720 }}>
             <thead>

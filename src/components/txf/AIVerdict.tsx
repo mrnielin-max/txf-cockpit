@@ -36,6 +36,7 @@ interface Verdict {
     narrative: string[];
     dataReady: { name: string; value: string }[];
     dataMissing: { name: string; why: string; impact: string; severity: string }[];
+    dataResolved?: { name: string; solution: string }[];
     factorCount: number;
   };
   stats: {
@@ -78,7 +79,7 @@ export default function AIVerdict() {
   if (!v) return (
     <div className="panel" style={{ padding: 16 }}>
       <div className="panel-title">🤖 AI 決策引擎 · 多因子模擬評估</div>
-      <div style={{ color: '#8b949e' }}>正在整合 19 大因子並執行 10,000 次蒙地卡羅模擬（約 10 秒）...</div>
+      <div style={{ color: '#8b949e' }}>正在整合 23 大因子並執行 10,000 次蒙地卡羅模擬（約 10 秒）...</div>
     </div>
   );
 
@@ -253,8 +254,23 @@ export default function AIVerdict() {
             ))}
           </div>
 
+          {/* 已用替代方案補上的缺口 */}
+          {v.assessment.dataResolved && v.assessment.dataResolved.length > 0 && (
+            <>
+              <div style={{ color: '#8b949e', fontSize: 13, marginBottom: 6 }}>✅ 已用「其他辦法」補上的缺口（原缺 → 替代方案）</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 14 }}>
+                {v.assessment.dataResolved.map((r, i) => (
+                  <div key={i} style={{ background: '#0d1117', borderRadius: 8, padding: '8px 12px', border: '1px solid #238636', fontSize: 12.5, lineHeight: 1.6 }}>
+                    <b style={{ color: '#3fb950' }}>✓</b> <b style={{ color: '#e6edf3' }}>{r.name}</b>
+                    <div style={{ color: '#8b949e' }}>{r.solution}</div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
           {/* 數據缺口清單 */}
-          <div style={{ color: '#8b949e', fontSize: 13, marginBottom: 6 }}>🔧 還缺的數據（取得後可再提升準確度）</div>
+          <div style={{ color: '#8b949e', fontSize: 13, marginBottom: 6 }}>🔧 仍無公開數據源的缺口（已用近似因子覆蓋）</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {v.assessment.dataMissing.map((m, i) => (
               <div key={i} style={{ background: '#0d1117', borderRadius: 8, padding: '8px 12px', border: '1px solid #21262d', fontSize: 12.5, lineHeight: 1.6 }}>
