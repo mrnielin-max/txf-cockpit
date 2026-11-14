@@ -94,6 +94,21 @@ function extractTitles(xml: string): string[] {
   return out;
 }
 
+// ── 各大社群平台標題（Threads脆/X/FB/IG/抖音/Mobile01/Dcard），via Google News site: 搜尋 ──
+const SOCIAL_SITES = ['threads.net', 'x.com', 'twitter.com', 'facebook.com', 'instagram.com', 'tiktok.com', 'mobile01.com', 'dcard.tw'];
+async function fetchSocialTitles(): Promise<{ site: string; titles: string[] }[]> {
+  const jobs = SOCIAL_SITES.map(async site => {
+    try {
+      const q = `(台股 OR 台指期 OR 台積電) site:${site}`;
+      const url = `https://news.google.com/rss/search?q=${encodeURIComponent(q)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant`;
+      const res = await fetch(url, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(12000), cache: 'no-store' } as RequestInit);
+      if (!res.ok) return { site, titles: [] as string[] };
+      return { site, titles: extractTitles(await res.text()).slice(0, 10) };
+    } catch { return { site, titles: [] as string[] }; }
+  });
+  return Promise.all(jobs);
+}
+
 // EWT（iShares MSCI Taiwan ETF）選擇權鏈：PCR + 最大痛點（替代 TAIFEX 選擇權日報）
 // Yahoo v7 options 需 cookie+crumb，伺服器端每次現場取得
 async function fetchEWTOptions(): Promise<{ pcr: number | null; maxPain: number | null; px: number | null; exp: string | null } | null> {
@@ -194,7 +209,7 @@ function fmtDate(d: Date): string {
 }
 
 export async function GET() {
-  const [txfRaw, chipsTxt, twii1d, twii5m, spx1d, vixQ, tsmQ, a50Txt, nvdaQ, soxQ, twdQ, tnxQ, dxyQ, goldQ, oilQ, tsmAdrQ, esQ, nqQ, twnQ, smhQ, tsm5mQ, pttXml, ewtOpt, twii5y, newsAlerts] = await Promise.all([
+  const [txfRaw, chipsTxt, twii1d, twii5m, spx1d, vixQ, tsmQ, a50Txt, nvdaQ, soxQ, twdQ, tnxQ, dxyQ, goldQ, oilQ, tsmAdrQ, esQ, nqQ, twnQ, smhQ, tsm5mQ, pttXml, ewtOpt, twii5y, socialTitles, newsAlerts] = await Promise.all([
     fetch('https://mis.taifex.com.tw/futures/api/getQuoteList', {
       method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': UA },
       body: JSON.stringify({ MarketType: '1', CommodityID: 'TXF' }),
@@ -225,6 +240,7 @@ export async function GET() {
     fetchText('https://www.ptt.cc/atom/stock.xml'),
     fetchEWTOptions(),
     fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/%5ETWII?interval=1d&range=5y'),
+    fetchSocialTitles(),
     scanNewsEvents(),
   ]);
 
@@ -394,18 +410,31 @@ export async function GET() {
     }
   } catch { /* ignore */ }
 
-  // ② PTT Stock 版情緒量化（關鍵字正負打分；反向指標）
+  // ② 全平台散戶情緒量化（PTT + Threads/X/FB/IG/抖音/Mobile01/Dcard；反向指標）
   let pttScore: number | null = null, pttPos = 0, pttNeg = 0, pttCount = 0;
+  let socialScore: number | null = null, socPos = 0, socNeg = 0, socCount = 0, socSitesHit = 0;
+  const POS = ['飆', '漲停', '噴出', '大漲', '看多', '暴漲', '起飛', '突破', '利多', '買爆', '翻倍', '紅K', '上車', '紅包', '飆漲'];
+  const NEG = ['崩', '跌停', '重挫', '砍倉', '斷頭', '看空', '血洗', '崩盤', '賣壓', '失守', '慘', '空單', '逃命', '下殺', '綠燈', '暴跌', '崩跌', '剉著等'];
   try {
     const titles = extractTitles(pttXml || '');
-    const POS = ['飆', '漲停', '噴出', '大漲', '看多', '暴漲', '起飛', '突破', '利多', '買爆', '翻倍', '紅K', '上車'];
-    const NEG = ['崩', '跌停', '重挫', '砍倉', '斷頭', '看空', '血洗', '崩盤', '賣壓', '失守', '慘', '空單', '逃命', '下殺', '綠燈'];
     pttCount = titles.length;
     for (const t of titles) {
       pttPos += POS.filter(w => t.includes(w)).length;
       pttNeg += NEG.filter(w => t.includes(w)).length;
     }
     if (pttCount > 0) pttScore = pttPos - pttNeg;
+  } catch { /* ignore */ }
+  try {
+    for (const g of (socialTitles || [])) {
+      if (g.titles.length === 0) continue;
+      socSitesHit++;
+      socCount += g.titles.length;
+      for (const t of g.titles) {
+        socPos += POS.filter(w => t.includes(w)).length;
+        socNeg += NEG.filter(w => t.includes(w)).length;
+      }
+    }
+    if (socCount > 0) socialScore = socPos - socNeg;
   } catch { /* ignore */ }
 
   // ③ SQ 結算行情統計（用 ^TWII 5 年歷史自己算每月第三個週三結算日前後報酬）
@@ -611,6 +640,11 @@ export async function GET() {
     const s = pttScore >= 6 ? -2 : pttScore >= 3 ? -1 : pttScore <= -6 ? 2 : pttScore <= -3 ? 1 : 0;
     add('ptt', 'PTT 散戶情緒（反向）', s, `PTT Stock 版近 ${pttCount} 篇文章：正面詞 ${pttPos}、負面詞 ${pttNeg} → 淨情緒 ${pttScore > 0 ? '+' : ''}${pttScore}。${s < 0 ? '散戶過度樂觀，歷史經驗常是高點訊號（反向偏空）' : s > 0 ? '散戶恐慌瀰漫，常見底部訊號（反向偏多）' : '情緒中性'}`);
   }
+  // F11k2 全平台社群情緒（Threads脆/X/FB/IG/抖音/Mobile01/Dcard；反向指標）
+  if (socialScore !== null && socCount >= 8) {
+    const s = socialScore >= 8 ? -2 : socialScore >= 4 ? -1 : socialScore <= -8 ? 2 : socialScore <= -4 ? 1 : 0;
+    add('social', '全平台社群情緒（反向）', s, `Threads(脆)/X/FB/IG/抖音/Mobile01/Dcard 共 ${socSitesHit} 平台 ${socCount} 篇討論：正面詞 ${socPos}、負面詞 ${socNeg} → 淨情緒 ${socialScore > 0 ? '+' : ''}${socialScore}。${s < 0 ? '全網過度樂觀（FOMO 瀰漫），常是高點訊號（反向偏空）' : s > 0 ? '全網恐慌瀰漫，常見底部訊號（反向偏多）' : '全網情緒中性'}`);
+  }
   // F12 重大事件（新聞掃描；命中負面關鍵字扣分）
   const severeKw = ['辭職', '請辭', '閃辭', '崩盤', '暴跌', '崩跌', '戰爭', '宣戰', '開戰', '金融危機', '股災', '破產', '制裁'];
   const severeHits = newsAlerts.filter(a => severeKw.some(k => a.keyword === k || a.title.includes(k)));
@@ -620,7 +654,7 @@ export async function GET() {
   else add('news', '重大事件警示', 0, `近3日無重大黑天鵝事件命中`);
 
   const totalScore = factors.reduce((a, f) => a + f.score, 0);
-  const maxScore = 36; // 因子加總上限（uslive ±6 + tsmlive/pcr/sq/ptt 各 ±2 後）
+  const maxScore = 38; // 因子加總上限（uslive ±6 + tsmlive/pcr/sq/ptt/social 各 ±2 後）
   const scoreRatio = totalScore / maxScore;
 
   // 分數帶對應
@@ -724,6 +758,7 @@ export async function GET() {
   push('EWT選擇權PCR（TAIFEX選擇權代理）', ewtOpt?.pcr, v => v.toFixed(2) + (ewtOpt?.maxPain && ewtOpt?.px ? `｜最大痛點 $${ewtOpt.maxPain}（${((ewtOpt.maxPain / ewtOpt.px - 1) * 100).toFixed(1)}%）` : ''));
   push('SQ結算行情統計（5年自算）', sqStats ? +sqStats.n : null, v => `${v.toFixed(0)} 次｜結算日±1日上漲 ${(sqStats!.upProb * 100).toFixed(0)}%｜波動 ±${sqStats!.stdPct.toFixed(2)}%`);
   push('PTT散戶情緒淨值', pttScore, v => `${v > 0 ? '+' : ''}${v.toFixed(0)}（正${pttPos}/負${pttNeg}，${pttCount}篇）`);
+  push('全平台社群情緒淨值', socialScore, v => `${v > 0 ? '+' : ''}${v.toFixed(0)}（正${socPos}/負${socNeg}，${socSitesHit}平台${socCount}篇）`);
 
   const dataMissing = [
     { name: '融資維持率（整戶）', why: 'TWSE 只公布餘額，維持率僅券商公會/集保內部統計，無任何公開 API（已試 TDCC、SFI 均無）', impact: '維持率 <200% 時斷頭賣壓會造成無差別殺盤（目前以融資餘額日變動 ±50 億近似偵測散戶進退場）', severity: '高' },
@@ -734,7 +769,7 @@ export async function GET() {
     { name: 'CDF 台積電期貨盤中報價', solution: '改用 2330 現股 5 分鐘線「最後 30 分鐘動量 + 量能倍數」偵測大戶尾盤態度（已實測有量有價），加上 TSM ADR + SOX，領先訊號覆蓋約 90%' },
     { name: 'SQ 特別結算價歷史序列', solution: '改用 ^TWII 5 年日線自算每月第三個週三（結算日）前後報酬統計，直接量化「結算行情」上漲機率與波動放大倍數，SQ 週自動啟用因子' },
     { name: '選擇權 Put/Call 比 + 最大痛點', solution: '改用 EWT（iShares MSCI Taiwan ETF）美股選擇權鏈（Yahoo 官方 API + cookie/crumb），算出 PCR(OI) 與最大痛點，與台股連動性高且免 TAIFEX session' },
-    { name: 'PTT/Dcard 情緒量化', solution: '已實作 PTT Stock 版 atom feed 標題正負詞打分（13 正面詞/15 負面詞），淨值 ≥+6 過度樂觀反向偏空、≤−6 恐慌反向偏多；Dcard API 目前拒連，PTT 已可獨立成因子' },
+    { name: 'PTT/Dcard 情緒量化', solution: '✅ 已完成：PTT Stock 版 atom feed + 全平台社群（Threads脆/X/FB/IG/抖音/Mobile01/Dcard via Google News site:搜尋）雙因子，正負詞打分，反向指標' },
   ];
 
   const narrative: string[] = [];
