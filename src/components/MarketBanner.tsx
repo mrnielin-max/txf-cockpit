@@ -25,7 +25,7 @@ export default function MarketBanner() {
       setTime(new Date().toLocaleTimeString('zh-TW', { hour12: false }));
     };
     load();
-    const id = setInterval(load, 30000);
+    const id = setInterval(load, 5000); // 即時刷新：觀看中每5秒同步
     return () => clearInterval(id);
   }, []);
 

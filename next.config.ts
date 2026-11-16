@@ -7,7 +7,7 @@ const nextConfig: NextConfig = {
         source: '/api/:path*',
         headers: [
           { key: 'Access-Control-Allow-Origin', value: '*' },
-          { key: 'Cache-Control', value: 'public, s-maxage=30, stale-while-revalidate=60' },
+          { key: 'Cache-Control', value: 'no-store, max-age=0' }, // 即時資料 API：禁止 CDN 快取，觀看時同步刷新
         ],
       },
     ];

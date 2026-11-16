@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { fetchMisQuoteList, MisQuote } from '@/lib/taifexMis';
 
 export const revalidate = 0;
 export const dynamic = 'force-dynamic';
@@ -209,12 +210,9 @@ function fmtDate(d: Date): string {
 }
 
 export async function GET() {
-  const [txfRaw, chipsTxt, twii1d, twii5m, spx1d, vixQ, tsmQ, a50Txt, nvdaQ, soxQ, twdQ, tnxQ, dxyQ, goldQ, oilQ, tsmAdrQ, esQ, nqQ, twnQ, smhQ, tsm5mQ, pttXml, ewtOpt, twii5y, socialTitles, newsAlerts] = await Promise.all([
-    fetch('https://mis.taifex.com.tw/futures/api/getQuoteList', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': UA },
-      body: JSON.stringify({ MarketType: '1', CommodityID: 'TXF' }),
-      signal: AbortSignal.timeout(15000), next: { revalidate: 60 },
-    } as RequestInit).then(r => r.json()).catch(() => null),
+  const [txfQuotes, chipsTxt, twii1d, twii5m, spx1d, vixQ, tsmQ, a50Txt, nvdaQ, soxQ, twdQ, tnxQ, dxyQ, goldQ, oilQ, tsmAdrQ, esQ, nqQ, twnQ, smhQ, tsm5mQ, pttXml, ewtOpt, twii5y, socialTitles, newsAlerts] = await Promise.all([
+    // 雙源取新（MT1 feed 可能整天停滯在上一交易日）
+    fetchMisQuoteList('TXF', 5).then(r => r.quotes).catch(() => [] as MisQuote[]),
     fetchText('https://raw.githubusercontent.com/optoptoptopt/taiwan-futures-daily/main/data/chips_daily.csv'),
     fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/%5ETWII?interval=1d&range=1y'),
     fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/%5ETWII?interval=5m&range=1d'),
@@ -246,12 +244,18 @@ export async function GET() {
 
   // ── 台指期 ──
   let frontLast: number | null = null, spot: number | null = null, frontVol: number | null = null;
+  // TXF-S 即時現貨高低點（TAIFEX 官方，比 Yahoo 5m 準；Yahoo 落後時以 TXF-S 為準）
+  let txfSLow: number | null = null, txfSHigh: number | null = null, txfSDate: string | null = null;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const ql = ((txfRaw as any)?.RtData?.QuoteList || []) as any[];
-    for (const q of ql) {
-      if (q.SymbolID === 'TXF-P') spot = num(q.CRefPrice);
-      if (/^TXF[A-Z0-9]+-[MF]$/.test(q.SymbolID) && frontLast === null) {
+    for (const q of txfQuotes) {
+      if (q.SymbolID === 'TXF-S') {
+        spot = num(q.CLastPrice) ?? spot;
+        txfSLow = num(q.CLowPrice);
+        txfSHigh = num(q.CHighPrice);
+        txfSDate = (q.CDate || '').replace(/\D/g, '');
+      }
+      if (q.SymbolID === 'TXF-P' && spot === null) spot = num(q.CRefPrice);
+      if (/^TXF[A-Z]\d-[MF]$/.test(q.SymbolID || '') && frontLast === null) {
         frontLast = num(q.CLastPrice) ?? num(q.CRefPrice);
         frontVol = num(q.CTotalVolume);
       }
@@ -488,6 +492,19 @@ export async function GET() {
     if (best < Infinity) { todayLow = best; todayLowTime = bestT; }
     if (worst > -Infinity) todayHigh = worst;
   } catch { /* ignore */ }
+  // TAIFEX TXF-S 即時現貨高低點交叉驗證：Yahoo 5m 常落後 15-30 分鐘且缺 bar，
+  // TXF-S 為官方即時（含當日 CLowPrice/CHighPrice），兩者取更低/更高（同日才比）
+  {
+    const todayDigits = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10).replace(/-/g, '');
+    const spotIsToday = txfSLow !== null && txfSDate === todayDigits; // TXF-S 報價日期必須是今天，避免拿到舊 feed 的昨日高低點
+    if (spotIsToday) {
+      if (txfSLow !== null && (todayLow === null || txfSLow < todayLow - 0.01)) { todayLow = txfSLow; todayLowTime = null; } // 低點由 TXF-S 更新，5m 時間戳已失真
+      if (txfSHigh !== null && (todayHigh === null || txfSHigh > todayHigh + 0.01)) todayHigh = txfSHigh;
+      // Yahoo 5m 若完全沒抓到（best=Infinity），也直接採用 TXF-S
+      if (todayLow === null && txfSLow !== null) todayLow = txfSLow;
+      if (todayHigh === null && txfSHigh !== null) todayHigh = txfSHigh;
+    }
+  }
 
   // ── 動能狀態 ──
   const rets: number[] = [];
@@ -645,6 +662,41 @@ export async function GET() {
     const s = socialScore >= 8 ? -2 : socialScore >= 4 ? -1 : socialScore <= -8 ? 2 : socialScore <= -4 ? 1 : 0;
     add('social', '全平台社群情緒（反向）', s, `Threads(脆)/X/FB/IG/抖音/Mobile01/Dcard 共 ${socSitesHit} 平台 ${socCount} 篇討論：正面詞 ${socPos}、負面詞 ${socNeg} → 淨情緒 ${socialScore > 0 ? '+' : ''}${socialScore}。${s < 0 ? '全網過度樂觀（FOMO 瀰漫），常是高點訊號（反向偏空）' : s > 0 ? '全網恐慌瀰漫，常見底部訊號（反向偏多）' : '全網情緒中性'}`);
   }
+  // F11k3 國安基金入場機率估算（法定啟動要件 + 歷史入場模式回測；模型推估值、非官方宣布）
+  let nsfProb = 0; let nsfLevel = '低'; const nsfReasons: string[] = [];
+  {
+    const dd250 = (() => { try { const hi = Math.max(...closes.slice(-250)); const last = closes[closes.length - 1]; return hi ? (hi - last) / hi * 100 : 0; } catch { return 0; } })();
+    const todayChgPct = closes.length > 1 ? (closes[closes.length - 1] / closes[closes.length - 2] - 1) * 100 : 0;
+    const downDays5 = rets.slice(-5).filter(r => r < 0).length;
+    const last5Pct = last5Ret * 100;
+    // 新聞/社群「國安基金」「護盤」提及（官方討論訊號，權重最重）
+    let nsfMentions = 0, huPanMentions = 0;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const allTitles: string[] = [...((socialTitles || []) as any[]).flatMap(g => g.titles || []), ...newsAlerts.map(a => a.title)];
+      for (const t of allTitles) {
+        if (t.includes('國安基金') || t.includes('国安基金')) nsfMentions++;
+        else if (t.includes('護盤')) huPanMentions++;
+      }
+    } catch { /* ignore */ }
+    if (nsfMentions >= 3) { nsfProb += 30; nsfReasons.push(`近3日新聞/社群 ${nsfMentions} 則提及「國安基金」（官方討論訊號）`); }
+    else if (nsfMentions >= 1) { nsfProb += 15; nsfReasons.push(`近3日新聞/社群 ${nsfMentions} 則提及「國安基金」`); }
+    if (huPanMentions >= 2) { nsfProb += 10; nsfReasons.push(`新聞/社群 ${huPanMentions} 則提及「護盤」`); }
+    if (dd250 >= 10) { nsfProb += 25; nsfReasons.push(`距250日高點回撤 ${dd250.toFixed(1)}%（歷史入場門檻 ≥10%）`); }
+    else if (dd250 >= 7) { nsfProb += 15; nsfReasons.push(`距250日高點回撤 ${dd250.toFixed(1)}%（接近歷史入場門檻）`); }
+    else if (dd250 >= 5) { nsfProb += 8; nsfReasons.push(`距250日高點回撤 ${dd250.toFixed(1)}%`); }
+    if (vix !== null && vix > 30) { nsfProb += 15; nsfReasons.push(`VIX ${vix.toFixed(1)} 恐慌級（歷史入場多伴隨 VIX>30）`); }
+    else if (vix !== null && vix > 25) { nsfProb += 10; nsfReasons.push(`VIX ${vix.toFixed(1)} 偏高`); }
+    else if (vix !== null && vix > 20) { nsfProb += 5; nsfReasons.push(`VIX ${vix.toFixed(1)} 略升`); }
+    if (todayChgPct <= -2) { nsfProb += 10; nsfReasons.push(`當日大盤重挫 ${todayChgPct.toFixed(2)}%（法定要件：顯著波動）`); }
+    if (last5Pct <= -5) { nsfProb += 10; nsfReasons.push(`近5日累計 ${last5Pct.toFixed(1)}%（持續性下跌）`); }
+    else if (downDays5 >= 4) { nsfProb += 5; nsfReasons.push(`近5日有 ${downDays5} 天下跌`); }
+    if (chips?.foreignChg != null && chips.foreignChg < -3000) { nsfProb += 8; nsfReasons.push(`外資期貨淨部位日減 ${chips.foreignChg.toLocaleString()} 口（大額撤出訊號）`); }
+    nsfProb = Math.min(100, nsfProb);
+    nsfLevel = nsfProb >= 70 ? '高（法定啟動要件多項成立）' : nsfProb >= 50 ? '中高（監控委員會可能隨時召開）' : nsfProb >= 30 ? '觀察（部分條件成立）' : '低（未見啟動條件）';
+    if (nsfProb >= 30) add('nsf', '國安基金入場機率', 1, `入場機率估算 ${nsfProb}% → ${nsfLevel}。依據：${nsfReasons.slice(0, 3).join('；') || '無'}。護盤資金若入場短期有下檔支撐（利多）；此為模型推估、非官方宣布`);
+    else add('nsf', '國安基金入場機率', 0, `入場機率估算 ${nsfProb}% → ${nsfLevel}。法定啟動要件（國際金融顯著波動/外資大額抽逃/重大事件）目前未成立${nsfReasons.length ? '：' + nsfReasons.slice(0, 2).join('；') : ''}`);
+  }
   // F12 重大事件（新聞掃描；命中負面關鍵字扣分）
   const severeKw = ['辭職', '請辭', '閃辭', '崩盤', '暴跌', '崩跌', '戰爭', '宣戰', '開戰', '金融危機', '股災', '破產', '制裁'];
   const severeHits = newsAlerts.filter(a => severeKw.some(k => a.keyword === k || a.title.includes(k)));
@@ -654,7 +706,7 @@ export async function GET() {
   else add('news', '重大事件警示', 0, `近3日無重大黑天鵝事件命中`);
 
   const totalScore = factors.reduce((a, f) => a + f.score, 0);
-  const maxScore = 38; // 因子加總上限（uslive ±6 + tsmlive/pcr/sq/ptt/social 各 ±2 後）
+  const maxScore = 39; // 因子加總上限（uslive ±6 + tsmlive/pcr/sq/ptt/social 各 ±2 + nsf +1 後）
   const scoreRatio = totalScore / maxScore;
 
   // 分數帶對應
@@ -697,18 +749,33 @@ export async function GET() {
   const p50Pts = refPrice ? Math.round(refPrice * (1 + pct(0.50))) : null;
   const p90Pts = refPrice ? Math.round(refPrice * (1 + pct(0.90))) : null;
 
-  // ════════ 盤中低點時間預估 ═══════
+  // ════════ 盤中低點時間預估（含 SQ 結算週修正）════════
 
   const nowHM = ph.hm;
+  // SQ 距離天數：結算日當天與前一日，大額部位集中平倉會改變盤中型態（刻意回彈平倉減損）
+  const sqRef = sqDateStr || nextSQDate(new Date(Date.now() + 8 * 3600 * 1000));
+  const daysToSQ = sqRef ? Math.round((new Date(sqRef + 'T00:00:00Z').getTime() - new Date(new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10) + 'T00:00:00Z').getTime()) / 86400000) : 99;
+  // 午後再破低基準機率 25%（近59日統計），SQ 週按結算波動放大比例修正（5年實測 std vs 平日 1.1%）
+  const volRatio = sqStats ? sqStats.stdPct / 1.1 : 1;
+  const rebreakPct = isSQWeek && sqStats ? Math.min(60, Math.max(10, Math.round(25 * volRatio))) : 25;
+  const sqSuffix = isSQWeek && sqStats
+    ? `【SQ結算週修正】${daysToSQ <= 0 ? '今日即結算日' : daysToSQ === 1 ? '明日結算' : `距結算 ${daysToSQ} 天（${sqRef}）`}：近5年結算日±1日波動 ±${sqStats.stdPct.toFixed(2)}%（平日僅 1.1%）、上漲機率 ${(sqStats.upProb * 100).toFixed(0)}%。結算前夕大額空單集中回補常出現刻意拉抬回彈（平倉減損行為）→ 午後再破低機率由 25% 修正為約 ${rebreakPct}%，且尾盤回彈風險高於平日，空單部位宜提前減碼。`
+    : '';
   let lowForecast: { text: string; window: string; passed: boolean };
+  const lowTxt = todayLow !== null ? `${todayLow.toFixed(0)}` : '—';
+  const highTxt = todayHigh !== null ? `${todayHigh.toFixed(0)}` : '—';
   if (todayLowTime && nowHM > todayLowTime && nowHM < '13:35') {
     lowForecast = { passed: false, window: todayLowTime,
-      text: `今日目前低點 ${todayLow?.toFixed(0)} @ ${todayLowTime}（台北）、高點 ${todayHigh?.toFixed(0)}。統計上 ${STATS.lowTimeDist[0].pct * 100}% 的低點落在 09:00-10:00、${(STATS.lowMorningPct * 100).toFixed(0)}% 在上午；現已過 10:00，午後再破低點機率約 25%。` };
+      text: `今日目前低點 ${lowTxt} @ ${todayLowTime}（台北）、高點 ${highTxt}。統計上 ${STATS.lowTimeDist[0].pct * 100}% 的低點落在 09:00-10:00、${(STATS.lowMorningPct * 100).toFixed(0)}% 在上午；現已過 10:00，午後再破低點機率約 ${rebreakPct}%。${sqSuffix}` };
+  } else if (todayLow !== null && !todayLowTime && nowHM < '13:35' && nowHM >= '08:45') {
+    // 低點由 TAIFEX TXF-S 即時現貨更新（Yahoo 5m 落後失真），無可靠時間戳
+    lowForecast = { passed: false, window: 'TAIFEX即時',
+      text: `今日目前低點 ${lowTxt}、高點 ${highTxt}（TAIFEX TXF-S 官方即時現貨，非 Yahoo 5m 落後資料）。統計上 ${STATS.lowTimeDist[0].pct * 100}% 的低點落在 09:00-10:00、${(STATS.lowMorningPct * 100).toFixed(0)}% 在上午；午後再破低點機率約 ${rebreakPct}%。${sqSuffix}` };
   } else if (nowHM >= '13:35' || nowHM < '08:45') {
     lowForecast = { passed: true, window: todayLowTime || '09:00-10:00',
-      text: todayLowTime ? `最近交易日低點 ${todayLow?.toFixed(0)} @ ${todayLowTime}、高點 ${todayHigh?.toFixed(0)}（台北）。` : `統計上低點最常出現在 09:00-10:00（54%），上午合計 75%。` };
+      text: todayLowTime ? `最近交易日低點 ${lowTxt} @ ${todayLowTime}、高點 ${highTxt}（台北）。${sqSuffix}` : (todayLow !== null ? `最近交易日低點 ${lowTxt}、高點 ${highTxt}（TAIFEX 即時現貨）。${sqSuffix}` : `統計上低點最常出現在 09:00-10:00（54%），上午合計 75%。${sqSuffix}`) };
   } else {
-    lowForecast = { passed: false, window: '09:00-10:00', text: `盤中預估：低點最可能落在 09:00-10:00（近59日統計 54%），次高為 13:00-13:30 尾盤段（19%）。` };
+    lowForecast = { passed: false, window: '09:00-10:00', text: `盤中預估：低點最可能落在 09:00-10:00（近59日統計 54%），次高為 13:00-13:30 尾盤段（19%）。${sqSuffix}` };
   }
 
   // ════════ 综合建議（含時段偵測 + 點數區間 ±100）════════
@@ -759,6 +826,7 @@ export async function GET() {
   push('SQ結算行情統計（5年自算）', sqStats ? +sqStats.n : null, v => `${v.toFixed(0)} 次｜結算日±1日上漲 ${(sqStats!.upProb * 100).toFixed(0)}%｜波動 ±${sqStats!.stdPct.toFixed(2)}%`);
   push('PTT散戶情緒淨值', pttScore, v => `${v > 0 ? '+' : ''}${v.toFixed(0)}（正${pttPos}/負${pttNeg}，${pttCount}篇）`);
   push('全平台社群情緒淨值', socialScore, v => `${v > 0 ? '+' : ''}${v.toFixed(0)}（正${socPos}/負${socNeg}，${socSitesHit}平台${socCount}篇）`);
+  push('國安基金入場機率（模型推估）', nsfProb, v => `${v.toFixed(0)}% · ${nsfLevel}${nsfReasons.length ? '｜' + nsfReasons[0] : ''}`);
 
   const dataMissing = [
     { name: '融資維持率（整戶）', why: 'TWSE 只公布餘額，維持率僅券商公會/集保內部統計，無任何公開 API（已試 TDCC、SFI 均無）', impact: '維持率 <200% 時斷頭賣壓會造成無差別殺盤（目前以融資餘額日變動 ±50 億近似偵測散戶進退場）', severity: '高' },
@@ -806,6 +874,7 @@ export async function GET() {
       rangeLowPts: p10Pts, rangeHighPts: p90Pts,
     },
     lowForecast,
+    nsfWatch: { prob: nsfProb, level: nsfLevel, reasons: nsfReasons },
     sqDate,
     verdict,
     assessment: { narrative, dataReady, dataMissing, dataResolved, factorCount: factors.length },

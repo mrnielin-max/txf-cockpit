@@ -25,7 +25,7 @@ export default function TxfHeader() {
     let alive = true;
     const load = () => fetch('/api/txf').then(r => r.json()).then(d => { if (alive) setData(d); }).catch(() => {});
     load();
-    const t = setInterval(load, 30000);
+    const t = setInterval(load, 5000); // 即時刷新：觀看中每5秒同步
     return () => { alive = false; clearInterval(t); };
   }, []);
 

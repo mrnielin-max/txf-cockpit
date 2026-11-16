@@ -82,8 +82,8 @@ export default function AdviceLog() {
   useEffect(() => {
     loadCloud();
     fetchSnap();
-    const timer = setInterval(fetchSnap, 60_000);
-    const sync = setInterval(loadCloud, 300_000);
+    const timer = setInterval(fetchSnap, 15_000); // 即時刷新：15秒同步
+    const sync = setInterval(loadCloud, 60_000);
     return () => { clearInterval(timer); clearInterval(sync); };
   }, [fetchSnap, loadCloud]);
 

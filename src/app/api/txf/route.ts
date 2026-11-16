@@ -1,23 +1,9 @@
 import { NextResponse } from 'next/server';
+import { fetchMisQuoteList } from '@/lib/taifexMis';
 
-// TAIFEX MIS 即時報價 API（POST JSON）
-// TXF=台指期, TXO=台指選擇權, MXF=小型台指, FITE=富櫃50期貨
-async function fetchMisQuotes(commodityId: string) {
-  const res = await fetch('https://mis.taifex.com.tw/futures/api/getQuoteList', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Origin': 'https://mis.taifex.com.tw',
-      'Referer': 'https://mis.taifex.com.tw/',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    },
-    body: JSON.stringify({ MarketType: '1', CommodityID: commodityId }),
-    next: { revalidate: 15 },
-  });
-  const data = await res.json();
-  if (data.RtCode !== '0' || !data.RtData?.QuoteList) return [];
-  return data.RtData.QuoteList as Record<string, string>[];
-}
+export const dynamic = 'force-dynamic';
+
+const NO_STORE = { headers: { 'Cache-Control': 'no-store' } };
 
 function toNum(v: string): number {
   if (!v || v === '-') return 0;
@@ -26,13 +12,18 @@ function toNum(v: string): number {
 
 export async function GET() {
   try {
-    const [txfList] = await Promise.all([fetchMisQuotes('TXF')]);
+    // TAIFEX MIS 雙源：MarketType=0（即時盤，-F 後綴 + TXF-S 即時現貨）與
+    // MarketType=1（全量延遲盤，-M 後綴 + TXF-P）並抓，取 CDate+CTime 較新者。
+    // 教訓：2026-11-16 MT1 整天停滯在上一交易日資料，只靠它會讓全站顯示舊價。
+    const { quotes: txfList, marketType, fresh } = await fetchMisQuoteList('TXF');
 
-    // 近月：成交量最大的 TX*-M 合約
-    const txfContracts = txfList.filter(q => q.SymbolID?.endsWith('-M') && q.SymbolID?.startsWith('TX'));
-    const spotQuote = txfList.find(q => q.SymbolID === 'TXF-P');
+    // 單月合約（排除含 '/' 的價差組合）：MT0 後綴 -F、MT1 後綴 -M
+    const txfContracts = txfList.filter(q => /^TXF[A-Z]\d-[MF]$/.test(q.SymbolID || ''));
+    const spotS = txfList.find(q => q.SymbolID === 'TXF-S'); // 即時現貨（有 last/low/high）
+    const spotP = txfList.find(q => q.SymbolID === 'TXF-P'); // 僅昨收參考
+    const spotQuote = spotS || spotP;
 
-    // 找成交量最大的合約作為近月
+    // 近月：成交量最大的單月合約
     let front = txfContracts[0];
     let maxVol = 0;
     for (const c of txfContracts) {
@@ -40,7 +31,12 @@ export async function GET() {
       if (v > maxVol) { maxVol = v; front = c; }
     }
 
-    const spotPrice = spotQuote ? toNum(spotQuote.CRefPrice) : 0;
+    const spotLast  = spotS ? toNum(spotS.CLastPrice) : 0;
+    const spotPrice = spotLast > 0 ? spotLast : (spotP ? toNum(spotP.CRefPrice) : 0);
+    // 今日加權指數即時高/低點（僅 TXF-S 提供）
+    const todayLow  = spotS ? toNum(spotS.CLowPrice)  : 0;
+    const todayHigh = spotS ? toNum(spotS.CHighPrice) : 0;
+
     const lastPrice = front ? toNum(front.CLastPrice) : 0;
     const refPrice  = front ? toNum(front.CRefPrice) : 0;
     const openPrice = front ? toNum(front.COpenPrice) : 0;
@@ -76,6 +72,12 @@ export async function GET() {
     return NextResponse.json({
       ok: true,
       spot: spotPrice,
+      todayLow,
+      todayHigh,
+      spotDate: spotQuote?.CDate || '',
+      spotTime: spotQuote?.CTime || '',
+      sourceMarketType: marketType,
+      sourceFresh: fresh,
       front: {
         symbol:    front?.SymbolID || '',
         name:      front?.DispCName || '',
@@ -98,7 +100,7 @@ export async function GET() {
       },
       contracts,
       fetchedAt: new Date().toISOString(),
-    });
+    }, NO_STORE);
   } catch (e) {
     return NextResponse.json({ ok: false, error: String(e) }, { status: 500 });
   }

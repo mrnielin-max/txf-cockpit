@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { fetchMisQuoteList, MisQuote } from '@/lib/taifexMis';
 
 // ════════════════════════════════════════════════════════════
 // 快照建議 API（輕量版 ai-verdict）：給「每 30 分鐘建議紀錄」專欄用
@@ -41,12 +42,9 @@ export async function GET() {
   const mm = nowCST.getUTCMinutes() < 30 ? '00' : '30';
   const slotHM = nowCST.toISOString().slice(11, 13) + ':' + mm;
 
-  const [txfRaw, esQ, nqQ, twnQ, smhQ, vixQ, nvdaQ, a50Txt] = await Promise.all([
-    fetch('https://mis.taifex.com.tw/futures/api/getQuoteList', {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': UA },
-      body: JSON.stringify({ MarketType: '1', CommodityID: 'TXF' }),
-      signal: AbortSignal.timeout(12000),
-    }).then(r => r.json()).catch(() => null),
+  const [txfQuotes, esQ, nqQ, twnQ, smhQ, vixQ, nvdaQ, a50Txt] = await Promise.all([
+    // 雙源取新：MT1 feed 可能整天停滯在上一交易日
+    fetchMisQuoteList('TXF').then(r => r.quotes).catch(() => [] as MisQuote[]),
     fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/ES%3DF?interval=1d&range=5d'),
     fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/NQ%3DF?interval=1d&range=5d'),
     fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/TWN?interval=1d&range=5d'),
@@ -60,10 +58,8 @@ export async function GET() {
   // 台指期近月價
   let frontLast: number | null = null;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const ql = ((txfRaw as any)?.RtData?.QuoteList || []) as any[];
-    for (const q of ql) {
-      if (/^TXF[A-Z0-9]+-[MF]$/.test(q.SymbolID) && frontLast === null) {
+    for (const q of txfQuotes) {
+      if (/^TXF[A-Z]\d-[MF]$/.test(q.SymbolID || '') && frontLast === null) {
         frontLast = num(q.CLastPrice) ?? num(q.CRefPrice);
       }
     }

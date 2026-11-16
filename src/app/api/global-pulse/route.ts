@@ -1,5 +1,8 @@
 import { NextResponse } from 'next/server';
 
+export const dynamic = 'force-dynamic'; // 禁 ISR/CDN 快取，每次請求即時抓
+const NO_STORE = { headers: { 'Cache-Control': 'no-store, max-age=0' } };
+
 // 海外脈動：影響台指期開盤的外盤因子
 const FACTORS = [
   { symbol: 'TSM',       name: '台積電 ADR',   group: '半導體', txfKey: true },
@@ -24,7 +27,7 @@ async function fetchOne(f: { symbol: string; name: string; group: string; txfKey
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(f.symbol)}?interval=1d&range=2d`;
     const res = await fetch(url, {
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
-      next: { revalidate: 60 },
+      next: { revalidate: 10 }, // 上游去重 10 秒，前端 10 秒輪詢即近即時
     });
     const data = await res.json();
     const meta = data?.chart?.result?.[0]?.meta;
@@ -57,5 +60,5 @@ export async function GET() {
   if (tsm?.ok && usdtwd?.ok) {
     tsmImplied = Math.round((tsm.price * usdtwd.price) / 5);
   }
-  return NextResponse.json({ factors: results, tsmImplied, fetchedAt: new Date().toISOString() });
+  return NextResponse.json({ factors: results, tsmImplied, fetchedAt: new Date().toISOString() }, NO_STORE);
 }

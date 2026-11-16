@@ -68,7 +68,7 @@ export default function AIVerdict() {
       if (d && d.ok) setV(d); else setErr(true);
     }).catch(() => setErr(true));
   };
-  useEffect(() => { load(); const t = setInterval(load, 5 * 60 * 1000); return () => clearInterval(t); }, []);
+  useEffect(() => { load(); const t = setInterval(load, 20 * 1000); return () => clearInterval(t); }, []); // 即時刷新：20秒同步（後端上游已有5秒快取去重）
 
   if (err) return (
     <div className="panel" style={{ padding: 16 }}>

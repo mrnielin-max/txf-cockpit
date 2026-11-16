@@ -73,7 +73,7 @@ export default function Watchlist({ onSelect }: Props) {
   useEffect(() => {
     if (list.length === 0) return;
     fetchQuotes(list);
-    const interval = setInterval(() => fetchQuotes(list, true), 30_000);
+    const interval = setInterval(() => fetchQuotes(list, true), 5_000); // 即時刷新：觀看中每5秒同步
     return () => clearInterval(interval);
   }, [list, fetchQuotes]);
 

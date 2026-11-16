@@ -18,7 +18,7 @@ export default function GlobalPulse() {
       .then(d => { if (alive) { setFactors(d.factors || []); setTsmImplied(d.tsmImplied || 0); } })
       .catch(() => {});
     load();
-    const t = setInterval(load, 60000);
+    const t = setInterval(load, 10000); // 即時刷新：觀看中每10秒同步
     return () => { alive = false; clearInterval(t); };
   }, []);
 

@@ -1,4 +1,9 @@
 import { NextResponse } from 'next/server';
+import { fetchMisQuoteList, fetchMisRawList } from '@/lib/taifexMis';
+
+export const dynamic = 'force-dynamic';
+
+const NO_STORE = { headers: { 'Cache-Control': 'no-store' } };
 
 const parse = (item: Record<string, string>) => {
   const curr = parseFloat(item.z && item.z !== '-' ? item.z : (item.pz || item.y || '0'));
@@ -16,21 +21,19 @@ const parse = (item: Record<string, string>) => {
 };
 
 async function fetchFutures(commodityID: string) {
-  const res = await fetch('https://mis.taifex.com.tw/futures/api/getQuoteList', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Origin': 'https://mis.taifex.com.tw',
-      'Referer': 'https://mis.taifex.com.tw/futures/zh/RegularTrading/GroupQuery',
-      'User-Agent': 'Mozilla/5.0',
-    },
-    body: JSON.stringify({ MarketType: '1', CommodityID: commodityID }),
-    next: { revalidate: 15 },
-  });
-  const d = await res.json();
-  const qs: Record<string, string>[] = d?.RtData?.QuoteList || [];
-  // 找近月合約：SymbolID 含 -M 且有成交價
-  const near = qs.find(q => q.SymbolID?.includes('-M') && q.CLastPrice);
+  // TXF 走雙源取新（MT1 可能整天停滯在上一交易日）；其他商品（TE）走 MT1 全量清單
+  const quotes = commodityID === 'TXF'
+    ? (await fetchMisQuoteList('TXF')).quotes
+    : await fetchMisRawList('1', commodityID);
+  // 近月：該商品單月合約（排除價差組合）中成交量最大者
+  const re = new RegExp(`^${commodityID}[A-Z]\\d-[MF]$`);
+  const cs = quotes.filter(q => re.test(q.SymbolID || '') && q.CLastPrice && q.CLastPrice !== '-');
+  let near: Record<string, string> | undefined;
+  let maxVol = -1;
+  for (const c of cs) {
+    const v = parseFloat(c.CTotalVolume || '0');
+    if (v > maxVol) { maxVol = v; near = c; }
+  }
   if (!near) return null;
   const curr = parseFloat(near.CLastPrice || '0');
   const ref  = parseFloat(near.CRefPrice  || '0');
@@ -46,6 +49,8 @@ async function fetchFutures(commodityID: string) {
     open:      parseFloat(near.COpenPrice  || '0'),
     high:      parseFloat(near.CHighPrice  || '0'),
     low:       parseFloat(near.CLowPrice   || '0'),
+    date:      near.CDate || '',
+    time:      near.CTime || '',
   };
 }
 
@@ -54,7 +59,7 @@ export async function GET() {
     // 加權指數 + 櫃買指數
     const res1 = await fetch(
       'https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=tse_t00.tw|otc_o00.tw&json=1&delay=0',
-      { headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://mis.twse.com.tw' }, next: { revalidate: 15 } }
+      { headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://mis.twse.com.tw' }, next: { revalidate: 5 } }
     );
     const d1 = await res1.json();
     const items1: Record<string, string>[] = d1?.msgArray || [];
@@ -72,8 +77,8 @@ export async function GET() {
       otc:   otc   ? parse(otc)  : null,
       fitx,
       fite,
-    });
+    }, NO_STORE);
   } catch {
-    return NextResponse.json({ taiex: null, otc: null, fitx: null, fite: null });
+    return NextResponse.json({ taiex: null, otc: null, fitx: null, fite: null }, NO_STORE);
   }
 }
