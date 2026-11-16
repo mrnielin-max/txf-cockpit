@@ -9,6 +9,7 @@ import InstitutionsPanel from '@/components/InstitutionsPanel';
 import CalendarPanel from '@/components/CalendarPanel';
 import AIVerdict from '@/components/txf/AIVerdict';
 import AdviceLog from '@/components/txf/AdviceLog';
+import AutoReview from '@/components/txf/AutoReview';
 
 export default function Home() {
   return (
@@ -68,6 +69,9 @@ export default function Home() {
 
           {/* ⑧ 每 30 分鐘建議紀錄：整點/半點自動存檔的買/賣/觀望快照 */}
           <AdviceLog />
+
+          {/* ⑨ 每日自動複盤：收盤後自動檢討命中率、偵測缺失、自動優化因子權重 */}
+          <AutoReview />
         </div>
       </div>
 

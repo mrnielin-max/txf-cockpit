@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { fetchMisQuoteList, MisQuote } from '@/lib/taifexMis';
 import { buildOutlook } from '@/lib/outlook';
+import { getCachedWeights } from '@/lib/reviewStore';
 
 // ════════════════════════════════════════════════════════════
 // 快照建議 API（輕量版 ai-verdict）：給「每 30 分鐘建議紀錄」專欄用
@@ -82,28 +83,30 @@ export async function GET() {
     vix = num((vixQ as any)?.chart?.result?.[0]?.meta?.regularMarketPrice);
   } catch { /* ignore */ }
 
-  // ── 快照評分：即時權重高（uslive×2）──
+  // ── 快照評分：即時權重高（uslive×2）；各因子再乘上「每日自動複盤」調整出的自適應權重 ──
+  const W = await getCachedWeights();
   let score = 0;
   const drivers: string[] = [];
   const live = [es, nq, twn, smh].filter((x): x is number => x !== null);
   if (live.length >= 2) {
     const avg = live.reduce((a, b) => a + b, 0) / live.length;
     const s = avg > 0.5 ? 3 : avg > 0 ? 1 : avg < -0.5 ? -3 : avg < 0 ? -1 : 0;
-    score += s * 2; // 即時行情權重加倍
+    score += s * 2 * W.uslive; // 即時行情權重加倍 × 自適應權重
     drivers.push(`美股即時 ${avg >= 0 ? '+' : ''}${avg.toFixed(2)}%（${s > 0 ? '多' : s < 0 ? '空' : '平'}）`);
   }
   if (a50Chg !== null) {
     const s = a50Chg > 0.3 ? 1 : a50Chg < -0.3 ? -1 : 0;
-    score += s; if (s) drivers.push(`A50 ${a50Chg >= 0 ? '+' : ''}${a50Chg.toFixed(2)}%（${s > 0 ? '多' : '空'}）`);
+    score += s * W.a50; if (s) drivers.push(`A50 ${a50Chg >= 0 ? '+' : ''}${a50Chg.toFixed(2)}%（${s > 0 ? '多' : '空'}）`);
   }
   if (vix !== null) {
     const s = vix > 25 ? -1 : vix < 15 ? 1 : 0;
-    score += s; if (s) drivers.push(`VIX ${vix.toFixed(1)}（${s > 0 ? '多' : '空'}）`);
+    score += s * W.vix; if (s) drivers.push(`VIX ${vix.toFixed(1)}（${s > 0 ? '多' : '空'}）`);
   }
   if (nvda !== null) {
     const s = nvda > 2 ? 1 : nvda < -2 ? -2 : 0;
-    score += s; if (s) drivers.push(`NVDA ${nvda >= 0 ? '+' : ''}${nvda.toFixed(2)}%（${s > 0 ? '多' : '空'}）`);
+    score += s * W.nvda; if (s) drivers.push(`NVDA ${nvda >= 0 ? '+' : ''}${nvda.toFixed(2)}%（${s > 0 ? '多' : '空'}）`);
   }
+  score = Math.round(score * 10) / 10;
 
   const dir = score >= 5 ? '多' : score <= -5 ? '空' : '觀望';
   const ref = frontLast;
@@ -126,15 +129,16 @@ export async function GET() {
     exitRule = '沒有持倉就不用動作；有持倉者等方向明確（分數 ≥5 或 ≤−5）再決定加減碼';
   }
 
-  // 時段標籤（TXF：日盤 08:45–13:45、夜盤 15:00–23:59；無凌晨盤）
+  // 時段標籤（TXF：日盤 08:45–13:45、夜盤 15:00–次日 05:00，週六凌晨屬週五夜盤）
   let phaseLabel: string;
   const isWeekend = dow === 0 || dow === 6;
+  const isLateNight = hm < '05:00' && dow >= 2 && dow <= 6; // 週二~週六凌晨 = 前一交易日夜盤
   if (hm >= '08:45' && hm < '13:45' && !isWeekend) phaseLabel = '日盤';
-  else if (hm >= '15:00' && !isWeekend) phaseLabel = '夜盤';
-  else if (isWeekend) phaseLabel = '週末休市';
+  else if ((hm >= '15:00' && !isWeekend) || isLateNight) phaseLabel = '夜盤';
+  else if (isWeekend && !isLateNight) phaseLabel = '週末休市';
   else phaseLabel = '休盤';
-  // 美股盤中時段疊加（台北 22:30 冬令/21:30 夏令 ~ 23:59 TXF 夜盤收）
-  const isUSOpen = hm >= '21:30' && hm <= '23:59';
+  // 美股盤中時段疊加（台北 21:30 夏令/22:30 冬令開盤 ~ 04:00 冬令/05:00 夏令收盤）
+  const isUSOpen = hm >= '21:30' || hm < '04:05';
   if (isUSOpen && phaseLabel === '夜盤') phaseLabel = '夜盤+美股盤中';
   if (isUSOpen && phaseLabel === '週末休市' && dow === 6) phaseLabel = '週末休市（美股盤中）';
 
@@ -151,5 +155,6 @@ export async function GET() {
     drivers: drivers.join('｜'),
     outlook,
     live: { es, nq, twn, smh, nvda, vix, a50Chg },
+    weights: W,
   });
 }

@@ -213,10 +213,10 @@ export default function AIVerdict() {
           {d.todayLow !== null && <><b style={{ color: '#39c5cf' }}>今日目前低點：</b>{Math.round(d.todayLow).toLocaleString()} 點 @ {d.todayLowTime}（台北）<br /></>}
           {v.lowForecast.text}
         </div>
-        <div style={{ display: 'flex', gap: 6, marginTop: 8, alignItems: 'flex-end', height: 46 }}>
+        <div style={{ display: 'flex', gap: 6, marginTop: 18, marginBottom: 4, alignItems: 'flex-end' }}>
           {v.stats.lowTimeDist.map(t => (
             <div key={t.bucket} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-              <div style={{ width: '100%', borderRadius: 3, height: Math.max(3, t.pct * 64), background: t.pct >= 0.5 ? '#f85149' : t.pct >= 0.15 ? '#d29922' : '#30363d' }} />
+              <div style={{ width: '100%', borderRadius: 3, height: Math.max(3, t.pct * 52), background: t.pct >= 0.5 ? '#f85149' : t.pct >= 0.15 ? '#d29922' : '#30363d' }} />
               <span style={{ fontSize: 10, color: '#6b7280' }}>{t.bucket.slice(0, 5)}</span>
               <span style={{ fontSize: 10, color: '#8b949e', fontWeight: 700 }}>{Math.round(t.pct * 100)}%</span>
             </div>
