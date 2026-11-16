@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 
 interface IndexData {
   name: string; value: number; prev: number; change: number; changePct: number; volume: number;
+  date?: string; lastTradeTime?: string;
 }
 interface SessionInfo { state: 'open' | 'break' | 'closed'; label: string }
 
@@ -37,10 +38,11 @@ export default function MarketBanner() {
     const clr = d ? (up ? '#ef4444' : '#22c55e') : '#6b7280';
     const sign = d && up ? '+' : '';
     const closed = sess && sess.state !== 'open';
-    // 收盤/午休：凍結顯示最終價格並標注狀態，直到下次開盤
+    // 收盤/午休：凍結顯示最終價格＋最後成交時間，直到下次開盤
+    const dtxt = d?.date && d.date.length === 8 ? `${d.date.slice(4, 6)}/${d.date.slice(6, 8)} ` : '';
     const footer = closed
-      ? `🔒 ${sess!.label}`
-      : (d && d.volume > 0 ? `成交量 ${d.volume.toLocaleString()} 張` : '盤中更新');
+      ? `🔒 ${sess!.label}${d?.lastTradeTime ? ` · 最後成交 ${dtxt}${d.lastTradeTime}` : ''}`
+      : (d && d.volume > 0 ? `成交量 ${d.volume.toLocaleString()} 張${d?.lastTradeTime ? ` · 最後成交 ${d.lastTradeTime}` : ''}` : '盤中更新');
     return (
       <div style={{ background: '#21262d', borderRadius: 10, padding: '14px 20px', flex: 1, minWidth: 180, opacity: closed ? 0.85 : 1 }}>
         <div style={{ color: '#8b949e', fontSize: 13, marginBottom: 4, fontWeight: 500 }}>

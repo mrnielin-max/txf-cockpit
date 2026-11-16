@@ -27,7 +27,9 @@ async function fetchFutures(commodityID: string) {
     ? (await fetchMisQuoteList('TXF')).quotes
     : await fetchMisRawList('1', commodityID);
   // 近月：該商品單月合約（排除價差組合）中成交量最大者
-  const re = new RegExp(`^${commodityID}[A-Z]\\d-[MF]$`);
+  // 注意：TE（電子盤）feed 的 SymbolID 前綴是 TXF（如 TXFK6-M），不是 TE！
+  const prefix = commodityID === 'TE' ? 'TXF' : commodityID;
+  const re = new RegExp(`^${prefix}[A-Z]\\d-[MF]$`);
   const cs = quotes.filter(q => re.test(q.SymbolID || '') && q.CLastPrice && q.CLastPrice !== '-');
   let near: Record<string, string> | undefined;
   let maxVol = -1;
@@ -40,6 +42,9 @@ async function fetchFutures(commodityID: string) {
   const ref  = parseFloat(near.CRefPrice  || '0');
   const diff = parseFloat(near.CDiff      || '0');
   const diffRate = parseFloat(near.CDiffRate || '0');
+  // 最後成交時間（收盤後凍結顯示用）
+  const ct = near.CTime || '';
+  const lastTradeTime = ct.length >= 6 ? `${ct.slice(0, 2)}:${ct.slice(2, 4)}:${ct.slice(4, 6)}` : '';
   return {
     name:      near.DispCName || commodityID,
     value:     curr,
@@ -52,6 +57,7 @@ async function fetchFutures(commodityID: string) {
     low:       parseFloat(near.CLowPrice   || '0'),
     date:      near.CDate || '',
     time:      near.CTime || '',
+    lastTradeTime,
   };
 }
 
