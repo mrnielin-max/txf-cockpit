@@ -207,20 +207,23 @@ export default function AIVerdict() {
       </div>
 
       {/* 盤中低點預估 */}
-      <div style={{ padding: '14px 20px', borderBottom: '1px solid #21262d' }}>
+      <div style={{ padding: '14px 20px 22px', borderBottom: '1px solid #21262d' }}>
         <div style={{ color: '#8b949e', fontSize: 13, marginBottom: 6 }}>⏱ 盤中低點時間預估（近 59 個交易日統計）</div>
         <div style={{ background: '#0d1117', borderRadius: 8, padding: '10px 14px', border: '1px solid #21262d', fontSize: 13.5, color: '#c9d1d9', lineHeight: 1.65 }}>
           {d.todayLow !== null && <><b style={{ color: '#39c5cf' }}>今日目前低點：</b>{Math.round(d.todayLow).toLocaleString()} 點 @ {d.todayLowTime}（台北）<br /></>}
           {v.lowForecast.text}
         </div>
-        <div style={{ display: 'flex', gap: 6, marginTop: 18, marginBottom: 4, alignItems: 'flex-end' }}>
-          {v.stats.lowTimeDist.map(t => (
-            <div key={t.bucket} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-              <div style={{ width: '100%', borderRadius: 3, height: Math.max(3, t.pct * 52), background: t.pct >= 0.5 ? '#f85149' : t.pct >= 0.15 ? '#d29922' : '#30363d' }} />
-              <span style={{ fontSize: 10, color: '#6b7280' }}>{t.bucket.slice(0, 5)}</span>
-              <span style={{ fontSize: 10, color: '#8b949e', fontWeight: 700 }}>{Math.round(t.pct * 100)}%</span>
-            </div>
-          ))}
+        <div style={{ marginTop: 28, marginBottom: 18 }}>
+          <div style={{ color: '#6b7280', fontSize: 11, marginBottom: 10 }}>▎各時段低點機率分布（柱高 = 該時段出現當日低點的機率）</div>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
+            {v.stats.lowTimeDist.map(t => (
+              <div key={t.bucket} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+                <div style={{ width: '100%', borderRadius: 3, height: Math.max(3, t.pct * 52), background: t.pct >= 0.5 ? '#f85149' : t.pct >= 0.15 ? '#d29922' : '#30363d' }} />
+                <span style={{ fontSize: 10, color: '#6b7280' }}>{t.bucket.slice(0, 5)}</span>
+                <span style={{ fontSize: 10, color: '#8b949e', fontWeight: 700 }}>{Math.round(t.pct * 100)}%</span>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 
