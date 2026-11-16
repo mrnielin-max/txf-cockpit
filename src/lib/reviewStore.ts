@@ -2,7 +2,7 @@
 // 複盤存儲：每日自動複盤報告 + 自適應因子權重（雲端 bin，全站共享）
 // bin 內容：{ reviews: Review[], weights: Weights, weightsLog: string[] }
 // ════════════════════════════════════════════════════════════
-const BIN_ID = 'afbaddd';
+const BIN_ID = 'cdbbcaa';
 const BIN_URL = `https://extendsclass.com/api/json-storage/bin/${BIN_ID}`;
 
 export interface FactorWeights {
