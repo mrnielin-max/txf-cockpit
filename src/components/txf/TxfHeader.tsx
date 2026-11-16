@@ -1,9 +1,13 @@
 'use client';
 import { useEffect, useState } from 'react';
 
+interface SessionInfo { state: 'open' | 'break' | 'closed'; label: string }
+
 interface TxfData {
   ok: boolean;
   spot: number;
+  session?: SessionInfo;
+  spotSession?: SessionInfo;
   front: {
     symbol: string; name: string; last: number; ref: number;
     open: number; high: number; low: number; volume: number;
@@ -38,6 +42,8 @@ export default function TxfHeader() {
   }
 
   const f = data.front;
+  const sess = data.session;
+  const closed = sess && sess.state !== 'open';
   const color = f.change > 0 ? up : f.change < 0 ? down : '#e6edf3';
   const t = f.time ? `${f.time.slice(0, 2)}:${f.time.slice(2, 4)}:${f.time.slice(4, 6)}` : '--';
 
@@ -48,6 +54,12 @@ export default function TxfHeader() {
         <div style={{ flex: '0 0 auto', padding: '16px 22px', borderRight: '1px solid #21262d' }}>
           <div style={{ color: '#8b949e', fontSize: 12, marginBottom: 4 }}>
             台指期近月 · {f.name || f.symbol} · TAIFEX {f.date} {t}
+            {closed && (
+              <span style={{ marginLeft: 8, color: '#d29922', fontWeight: 700 }}>🔒 {sess!.label}</span>
+            )}
+            {sess && sess.state === 'open' && (
+              <span style={{ marginLeft: 8, color: '#3fb950', fontWeight: 700 }}>🟢 {sess.label}</span>
+            )}
           </div>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
             <span style={{ fontSize: 40, fontWeight: 800, color, fontVariantNumeric: 'tabular-nums' }}>

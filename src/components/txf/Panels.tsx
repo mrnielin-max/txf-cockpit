@@ -300,23 +300,23 @@ const SESSIONS: SessionDef[] = [
   { id: 'us-close',       name: '⑧ 美股收盤',       utcH: 21, utcM: 0,  days: [1,2,3,4,5], note: '台北 次日04:00（夏）/ 05:00（冬）', dstShiftH: -1 },
 ];
 
-// 目前進行中的時段（台北時間判斷）
+// 目前進行中的時段（台北時間判斷）→ 亮在「收盤」列：顯示距離收盤倒數
 function activeSessions(now: Date): string[] {
   const tpe = new Date(now.getTime() + 8 * 3600000);
   const hm = tpe.toISOString().slice(11, 16);
   const dow = tpe.getUTCDay(); // 0=Sun（台北日）
   const active: string[] = [];
   const weekday = dow >= 1 && dow <= 5;
-  if (weekday && hm >= '08:45' && hm < '13:45') active.push('txf-open');
-  if (weekday && hm >= '09:00' && hm < '13:30') active.push('tw-open');
-  if (weekday && hm >= '15:00') active.push('txf-night');           // 15:00-24:00
-  if (hm < '05:00' && dow >= 2 && dow <= 6) active.push('txf-night'); // 00:00-05:00（前一日夜盤）
+  if (weekday && hm >= '08:45' && hm < '13:45') active.push('txf-close');
+  if (weekday && hm >= '09:00' && hm < '13:30') active.push('tw-close');
+  if (weekday && hm >= '15:00') active.push('txf-night-close');           // 15:00-24:00
+  if (hm < '05:00' && dow >= 2 && dow <= 6) active.push('txf-night-close'); // 00:00-05:00（前一日夜盤）
   // 美股：台北 21:30/22:30 - 04:00/05:00
   const dst = isUsDst(now);
   const usOpenHM = dst ? '21:30' : '22:30';
   const usCloseHM = dst ? '04:00' : '05:00';
-  if (hm >= usOpenHM && weekday) active.push('us-open');
-  if (hm < usCloseHM && dow >= 2 && dow <= 6) active.push('us-open');
+  if (hm >= usOpenHM && weekday) active.push('us-close');
+  if (hm < usCloseHM && dow >= 2 && dow <= 6) active.push('us-close');
   return active;
 }
 
@@ -333,8 +333,9 @@ function nextOccurrence(s: SessionDef, now: Date): Date {
   return new Date(now.getTime() + 86400000);
 }
 
-function fmtICT(d: Date): string {
-  return new Date(d.getTime() + 7 * 3600000).toISOString().slice(11, 16);
+// 台北時間標籤（+8）
+function fmtTPE(d: Date): string {
+  return new Date(d.getTime() + 8 * 3600000).toISOString().slice(11, 16);
 }
 
 function countdown(ms: number): string {
@@ -383,7 +384,7 @@ export function SessionClock() {
         </div>
       </div>
       <div style={{ color: '#8b949e', fontSize: 12, marginBottom: 12 }}>
-        進行中的時段會亮🔴「進行中」；倒數以「下一次」發生的時間計算（跳過週末）
+        開盤後對應「收盤」列亮🔴進行中並倒數至收盤；其餘列倒數「下一次」發生時間（跳過週末）；收盤後所有價格凍結顯示最終成交價至下次開盤
       </div>
       <div className="scroll-x">
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10, minWidth: 420 }}>
@@ -398,10 +399,10 @@ export function SessionClock() {
               <span style={{ color: '#e6edf3', fontWeight: 700, fontSize: 14, whiteSpace: 'nowrap' }}>
                 {isLive && '🔴 '}{r.name}
               </span>
-              <span style={{ color: '#8b949e', fontSize: 11, whiteSpace: 'nowrap' }}>台北 {fmtICT(r.next)}</span>
+              <span style={{ color: '#8b949e', fontSize: 11, whiteSpace: 'nowrap' }}>台北 {fmtTPE(r.next)}</span>
             </div>
             <div style={{ color: isLive ? '#f97316' : '#d29922', fontSize: 15, fontWeight: 700, fontVariantNumeric: 'tabular-nums', marginTop: 2 }}>
-              {isLive ? '進行中' : countdown(r.diff)}
+              {isLive ? `進行中 · ${countdown(r.diff)} 後收盤` : countdown(r.diff)}
             </div>
             <div style={{ color: '#8b949e', fontSize: 11, marginTop: 2 }}>{r.note}</div>
           </div>

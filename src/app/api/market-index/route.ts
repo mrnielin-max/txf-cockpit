@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { fetchMisQuoteList, fetchMisRawList } from '@/lib/taifexMis';
+import { spotSession, txfSession, teSession } from '@/lib/sessionState';
 
 export const dynamic = 'force-dynamic';
 
@@ -77,6 +78,7 @@ export async function GET() {
       otc:   otc   ? parse(otc)  : null,
       fitx,
       fite,
+      sessions: { spot: spotSession(), fitx: txfSession(), fite: teSession() }, // 收盤後顯示最終價+收盤標籤
     }, NO_STORE);
   } catch {
     return NextResponse.json({ taiex: null, otc: null, fitx: null, fite: null }, NO_STORE);

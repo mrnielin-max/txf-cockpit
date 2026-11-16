@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { fetchMisQuoteList } from '@/lib/taifexMis';
+import { txfSession, spotSession } from '@/lib/sessionState';
 
 export const dynamic = 'force-dynamic';
 
@@ -74,6 +75,8 @@ export async function GET() {
       spot: spotPrice,
       todayLow,
       todayHigh,
+      session: txfSession(),      // 日盤/午休/夜盤/收盤 狀態（收盤時前端凍結顯示最後成交價）
+      spotSession: spotSession(), // 現貨收盤狀態
       spotDate: spotQuote?.CDate || '',
       spotTime: spotQuote?.CTime || '',
       sourceMarketType: marketType,
