@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { fetchMisQuoteList, MisQuote } from '@/lib/taifexMis';
+import { buildOutlook } from '@/lib/outlook';
 
 // ════════════════════════════════════════════════════════════
 // 快照建議 API（輕量版 ai-verdict）：給「每 30 分鐘建議紀錄」專欄用
@@ -137,6 +138,9 @@ export async function GET() {
   if (isUSOpen && phaseLabel === '夜盤') phaseLabel = '夜盤+美股盤中';
   if (isUSOpen && phaseLabel === '週末休市' && dow === 6) phaseLabel = '週末休市（美股盤中）';
 
+  // 預期盤勢：說明這筆建議「預期哪個時段的盤勢 + 原因」（用戶要求不可只給方向不給理由）
+  const outlook = buildOutlook(dir, phaseLabel, score, drivers.join('；'));
+
   return NextResponse.json({
     ok: true,
     ts: nowCST.toISOString().slice(0, 19).replace('T', ' ') + ' (台北)',
@@ -145,6 +149,7 @@ export async function GET() {
     hm, phaseLabel,
     ref, score, dir, advice, zone, exitRule,
     drivers: drivers.join('｜'),
+    outlook,
     live: { es, nq, twn, smh, nvda, vix, a50Chg },
   });
 }

@@ -2,7 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: '台指期駕駛艙 · TXF Cockpit',
+  title: '台指期指標站 · TXF Indicator Station',
   description: '台指期交易決策儀表板：近月報價、基差、關鍵時段倒數、海外脈動、消息面、歷史事件庫、AI 決策引擎',
 };
 

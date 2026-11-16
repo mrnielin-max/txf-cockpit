@@ -19,7 +19,7 @@ export default function Home() {
     }}>
       {/* ── 頂部導覽列 ── */}
       <nav className="top-nav">
-        <div className="nav-title">🎯 台指期駕駛艙</div>
+        <div className="nav-title">🎯 台指期指標站</div>
         <div style={{ flex: 1 }} />
         <div className="nav-sub">對比設計版 · 一切圍繞台指期交易決策</div>
       </nav>
@@ -76,7 +76,7 @@ export default function Home() {
         borderTop: '1px solid #21262d', padding: '24px 28px',
         textAlign: 'center', color: '#6b7280', fontSize: 13, marginTop: 40,
       }}>
-        <div>台指期駕駛艙 · 資料來源：TAIFEX MIS · 台灣證券交易所 · Yahoo Finance · Google News · PTT</div>
+        <div>台指期指標站 · 資料來源：TAIFEX MIS · 台灣證券交易所 · Yahoo Finance · Google News · PTT</div>
         <div style={{ marginTop: 4 }}>本平台資訊僅供參考，不構成投資建議；期貨交易具高槓桿風險，投資人須自行承擔</div>
       </footer>
     </div>

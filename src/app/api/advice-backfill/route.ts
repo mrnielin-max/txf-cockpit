@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { buildOutlook } from '@/lib/outlook';
 
 // ════════════════════════════════════════════════════════════
 // 歷史回溯重建 API：用 Yahoo 30 分鐘 K 棒（^TWII / ES / NQ / VIX / NVDA）
@@ -56,7 +57,7 @@ function dailyOpen(m: Map<string, number>): Map<string, number> {
 interface Rec {
   slot: string; ts: string; phaseLabel: string; ref: number | null;
   score: number; dir: string; advice: string; zone: string; exitRule: string;
-  drivers: string; backfilled?: boolean;
+  drivers: string; outlook?: string; backfilled?: boolean;
 }
 
 function makeAdvice(ref: number, dir: string, phaseLabel: string) {
@@ -165,7 +166,8 @@ export async function GET() {
     const { advice, zone, exitRule } = makeAdvice(refVal, dir, phaseLabel);
     const slot = `${day} ${hm.slice(0, 3)}${hm.slice(3) < '30' ? '00' : '30'}`;
     if (!existingSlots.has(slot)) {
-      built.push({ slot, ts: `${key}:00 (台北·回溯)`, phaseLabel, ref: Math.round(refVal), score, dir, advice, zone, exitRule, drivers: drivers.join('｜'), backfilled: true });
+      const driversTxt = drivers.join('｜');
+      built.push({ slot, ts: `${key}:00 (台北·回溯)`, phaseLabel, ref: Math.round(refVal), score, dir, advice, zone, exitRule, drivers: driversTxt, outlook: buildOutlook(dir, phaseLabel, score, driversTxt), backfilled: true });
     }
   }
 
@@ -210,7 +212,9 @@ export async function GET() {
     const isUS = hm >= '21:30';
     const phaseLabel = isUS ? '夜盤+美股盤中' : '夜盤';
     const { advice, zone, exitRule } = makeAdvice(dayRef, dir, phaseLabel);
-    built.push({ slot, ts: `${key}:00 (台北·回溯)`, phaseLabel, ref: Math.round(dayRef), score, dir, advice, zone, exitRule, drivers: drivers.join('｜') + '｜ref=當日加權收盤(期貨近似)', backfilled: true });
+    const driversTxt = drivers.join('｜') + '｜ref=當日加權收盤(期貨近似)';
+    const outlook = buildOutlook(dir, phaseLabel, score, driversTxt);
+    built.push({ slot, ts: `${key}:00 (台北·回溯)`, phaseLabel, ref: Math.round(dayRef), score, dir, advice, zone, exitRule, drivers: driversTxt, outlook, backfilled: true });
   }
   void lastTwiiRef; void lastDay; void nqFirst;
 

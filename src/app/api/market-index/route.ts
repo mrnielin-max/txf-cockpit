@@ -18,6 +18,9 @@ const parse = (item: Record<string, string>) => {
     change: parseFloat(change.toFixed(2)),
     changePct: parseFloat(changePct.toFixed(2)),
     volume: parseFloat(item.v || '0'),
+    // 收盤卡片顯示「最後成交時間」用：d=日期(yyyymmdd)、t=最後成交時間(HH:MM:SS)
+    date: item.d || item['^'] || '',
+    lastTradeTime: item.t || item['%'] || '',
   };
 };
 

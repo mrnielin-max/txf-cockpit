@@ -18,6 +18,7 @@ interface SnapRecord {
   zone: string;
   exitRule: string;
   drivers: string;
+  outlook?: string;    // 預期盤勢 + 原因（新紀錄才有）
   backfilled?: boolean;
 }
 
@@ -105,7 +106,7 @@ export default function AdviceLog() {
     if (q.trim()) {
       const kw = q.trim().toLowerCase();
       out = out.filter(r =>
-        (r.slot + r.phaseLabel + r.advice + r.zone + r.exitRule + (r.drivers || '')).toLowerCase().includes(kw)
+        (r.slot + r.phaseLabel + r.advice + r.zone + r.exitRule + (r.drivers || '') + (r.outlook || '')).toLowerCase().includes(kw)
       );
     }
     return out;
@@ -144,7 +145,12 @@ export default function AdviceLog() {
           <div style={{ fontSize: 13, lineHeight: 1.8, color: '#c9d1d9' }}>
             <div>📍 <b style={{ color: '#e6edf3' }}>買賣區間：</b>{current.zone}</div>
             <div>🏁 <b style={{ color: '#e6edf3' }}>平倉條件：</b>{current.exitRule}</div>
-            {current.drivers && <div style={{ color: '#8b949e', fontSize: 12 }}>依據：{current.drivers}</div>}
+            {current.outlook && (
+              <div style={{ marginTop: 4, padding: '6px 10px', background: 'rgba(88,166,255,0.08)', borderLeft: '3px solid #58a6ff', borderRadius: 4, color: '#c9d1d9', fontSize: 12.5, lineHeight: 1.7 }}>
+                🔭 <b style={{ color: '#58a6ff' }}>預期盤勢與原因：</b>{current.outlook}
+              </div>
+            )}
+            {current.drivers && <div style={{ color: '#8b949e', fontSize: 12, marginTop: 4 }}>依據：{current.drivers}</div>}
           </div>
         </div>
       )}
@@ -193,6 +199,7 @@ export default function AdviceLog() {
                 <th style={{ padding: '6px 8px', borderBottom: '1px solid #21262d' }}>分數</th>
                 <th style={{ padding: '6px 8px', borderBottom: '1px solid #21262d' }}>建議</th>
                 <th style={{ padding: '6px 8px', borderBottom: '1px solid #21262d' }}>區間 / 平倉條件</th>
+                <th style={{ padding: '6px 8px', borderBottom: '1px solid #21262d' }}>原因 / 預期盤勢</th>
               </tr>
             </thead>
             <tbody>
@@ -211,6 +218,11 @@ export default function AdviceLog() {
                   <td style={{ padding: '7px 8px', borderBottom: '1px solid #161b22' }}>
                     {r.zone}<br />
                     <span style={{ color: '#6b7280', fontSize: 11.5 }}>{r.exitRule}</span>
+                  </td>
+                  <td style={{ padding: '7px 8px', borderBottom: '1px solid #161b22', maxWidth: 300, lineHeight: 1.6 }}>
+                    <span style={{ color: '#8b949e', fontSize: 11.5 }}>
+                      {r.outlook || (r.drivers ? `依據：${r.drivers}` : '（舊紀錄未存原因）')}
+                    </span>
                   </td>
                 </tr>
               ))}
