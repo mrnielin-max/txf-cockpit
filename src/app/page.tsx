@@ -8,6 +8,7 @@ import ContributionPanel from '@/components/ContributionPanel';
 import InstitutionsPanel from '@/components/InstitutionsPanel';
 import CalendarPanel from '@/components/CalendarPanel';
 import AIVerdict from '@/components/txf/AIVerdict';
+import MyPosition from '@/components/txf/MyPosition';
 import AdviceLog from '@/components/txf/AdviceLog';
 import AutoReview from '@/components/txf/AutoReview';
 
@@ -32,6 +33,9 @@ export default function Home() {
         <MarketBanner />
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 16 }}>
+
+          {/* ⓪ 我的未平倉（最上方）：先輸入買/賣、張數、均價，下方數據與建議以持倉為基準 */}
+          <MyPosition />
 
           {/* ① 台指期本尊：近月報價、基差、委買賣、月合約結構 */}
           <TxfHeader />

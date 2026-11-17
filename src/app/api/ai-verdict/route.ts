@@ -210,7 +210,17 @@ function fmtDate(d: Date): string {
   return `${d.toISOString().slice(5, 10).replace('-', '/')}（週${['日', '一', '二', '三', '四', '五', '六'][d.getUTCDay()]}）`;
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  // ════ 我的未平倉（前端 MyPosition 元件透過 query 傳入）════
+  // 教訓（2026-11-17）：引擎不知道瀏覽者手上是買還是賣、幾張，建議無法對應實際部位。
+  const q = new URL(req.url).searchParams;
+  const posDirRaw = q.get('pos');
+  const posQty = Math.max(0, Math.min(9999, parseInt(q.get('qty') || '0', 10) || 0));
+  const posEntry = parseFloat(q.get('entry') || '') || null;
+  const posItem = q.get('item') === 'MXF' ? 'MXF' : 'TXF';
+  const pos = (posDirRaw === 'long' || posDirRaw === 'short') && posQty > 0 && posEntry && posEntry > 1000 && posEntry < 200000
+    ? { dir: posDirRaw as 'long' | 'short', qty: posQty, entry: posEntry, mult: posItem === 'MXF' ? 50 : 200, item: posItem }
+    : null;
   const [txfQuotes, chipsTxt, twii1d, twii5m, spx1d, vixQ, tsmQ, a50Txt, nvdaQ, soxQ, twdQ, tnxQ, dxyQ, goldQ, oilQ, tsmAdrQ, esQ, nqQ, twnQ, smhQ, tsm5mQ, pttXml, ewtOpt, twii5y, socialTitles, newsAlerts] = await Promise.all([
     // 雙源取新（MT1 feed 可能整天停滯在上一交易日）
     fetchMisQuoteList('TXF', 5).then(r => r.quotes).catch(() => [] as MisQuote[]),
@@ -833,6 +843,7 @@ export async function GET() {
     lowForecast, nextWd, todayLow, todayHigh, ph, newsAlerts,
     p10Pts, p50Pts, p90Pts, factorCount: factors.length,
     intraday,
+    pos,
   });
 
   const sqDate = sqDateStr || nextSQDate(nowCST);
@@ -971,6 +982,7 @@ function buildVerdict(p: {
   newsAlerts: NewsAlert[]; p10Pts: number | null; p50Pts: number | null; p90Pts: number | null;
   factorCount: number;
   intraday: IntradayState | null;
+  pos: { dir: 'long' | 'short'; qty: number; entry: number; mult: number; item: string } | null;
 }) {
   const s = p.totalScore;
   const dir = s >= 11 ? 'strong-buy' : s >= 4 ? 'buy' : s <= -11 ? 'strong-sell' : s <= -4 ? 'sell' : 'neutral';
@@ -985,15 +997,92 @@ function buildVerdict(p: {
 
   const lines: string[] = [];
   const ref = p.refPrice;
-  const R = 100; // ±100 點區間（依用戶要求）
 
-  // ── 一句話大白話結論 ──
-  if (dir === 'buy' || dir === 'strong-buy') {
-    lines.push(`【一句話結論】現在「建議買」（做多）。價格跌到 ${ref ? (Math.round(ref) - R).toLocaleString() : '--'} ~ ${ref ? Math.round(ref).toLocaleString() : '--'} 點之間就是買點；跌破 ${ref ? (Math.round(ref) - R - 30).toLocaleString() : '--'} 點就認賠出場。`);
-  } else if (dir === 'sell' || dir === 'strong-sell') {
-    lines.push(`【一句話結論】現在「建議賣」（做空或不要買）。價格漲到 ${ref ? Math.round(ref).toLocaleString() : '--'} ~ ${ref ? (Math.round(ref) + R).toLocaleString() : '--'} 點之間賣不出力就是賣點；漲破 ${ref ? (Math.round(ref) + R + 30).toLocaleString() : '--'} 點就認賠出場。`);
-  } else {
-    lines.push(`【一句話結論】現在「不建議買也不建議賣」，觀望等機會。等價格跌到 ${ref ? (Math.round(ref) - R).toLocaleString() : '--'} 點附近才可以考慮買，等價格漲到 ${ref ? (Math.round(ref) + R).toLocaleString() : '--'} 點附近才可以考慮賣，現在這個位置兩邊都不划算。`);
+  // ════ 動態止盈止損校準（2026-11-17 用戶反饋：固定 ±100 點止損不恰當）════
+  // 固定 ±100 點在高波動盤（如 11/17 日內振幅 1789 點）會被反覆掃損，低波動盤又過寬。
+  // 改為：5日模擬 P10~P90 → σ5 → 日 σ → 當沖停損 ≈ 0.9σ、停利 ≈ 1.5σ、進場緩衝區 ≈ 0.4σ。
+  const sig5 = (p.p90Pts !== null && p.p10Pts !== null) ? (p.p90Pts - p.p10Pts) / 2.5631 : null;
+  const sigDaily = sig5 !== null ? sig5 / Math.sqrt(5) : (ref ? ref * 0.011 : 400);
+  const stopDist = Math.max(60, Math.min(900, Math.round(sigDaily * 0.9)));
+  const tpDist = Math.max(120, Math.min(1500, Math.round(sigDaily * 1.5)));
+  const zoneDist = Math.max(40, Math.min(500, Math.round(sigDaily * 0.4))); // 進場回檔/反彈緩衝區寬度
+  // 往返成本（點）：期貨交易稅 ≈ 0.0001×價格×2邊 + 手續費（TXF 原價每張每邊 NT$200 ≈ 2 點/張往返；MXF 依券商折扣）
+  const costPts = ref ? ref * 0.0002 + 2 : 10;
+  lines.push(`【止盈止損校準】依模擬波動率（日 σ ≈ ${Math.round(sigDaily)} 點）：當沖停損 ±${stopDist} 點、停利目標 ±${tpDist} 點（盈虧比 ≈ 1:${(tpDist / stopDist).toFixed(1)}）。舊版固定 ±100 點止損${stopDist >= 180 ? `在當前波動下過窄——日內常態波動 ±${Math.round(sigDaily)} 點，±100 點會在方向還沒走出來前就被洗掉（11/17 日內振幅高達 1789 點就是例子），現改按波動率校準並搭配日內結構（低點/高點 ±30 點緩衝）設停損` : stopDist <= 90 ? `在當前低波動下過寬，本金曝險太大，現收緊為 ±${stopDist} 點` : `與當前波動大致相符，但仍改為動態：隨波動率每日自動調整，不再寫死`}。往返成本約 ${costPts.toFixed(0)} 點/張（交易稅 ≈ ${(ref ? ref * 0.0002 : 8).toFixed(1)} 點＋手續費 ≈ 2 點），停損距離必須 > 3 倍成本（≥ ${Math.round(costPts * 3)} 點）才值得進場。`);
+
+  // ════ 我的持倉（2026-11-17 用戶要求：最上方先輸入買/賣、張數、均價，再給數據與建議）════
+  if (p.pos && p.frontLast) {
+    const ps = p.pos;
+    const sign = ps.dir === 'long' ? 1 : -1;
+    const pnlPts = (p.frontLast - ps.entry) * sign;
+    const pnlTwd = pnlPts * ps.qty * ps.mult;
+    const fmtT = (n: number) => (n >= 0 ? '+' : '') + Math.round(n).toLocaleString('zh-TW');
+    lines.push(`【我的持倉】${ps.item} ${ps.dir === 'long' ? '買（做多）' : '賣（做空）'} ${ps.qty} 張，均價 ${Math.round(ps.entry).toLocaleString()}｜現價 ${Math.round(p.frontLast).toLocaleString()}｜未實現${pnlPts >= 0 ? '獲利' : '虧損'} ${pnlPts >= 0 ? '+' : ''}${pnlPts.toFixed(0)} 點 = ${fmtT(pnlTwd)} TWD（每點 ${ps.mult} 元，未計手續費與交易稅）。風險敏感度：行情每逆向 100 點，損益 ${fmtT(-100 * ps.qty * ps.mult)} TWD。`);
+
+    const engineLong = s >= 4, engineShort = s <= -4;
+    const idLow = p.intraday ? p.intraday.low : null;
+    const idHigh = p.intraday ? p.intraday.high : null;
+    const mid = Math.round((idLow !== null && idHigh !== null) ? (idLow + idHigh) / 2 : p.frontLast);
+    const inProfit = pnlPts > 0;
+    let advice: string;
+    if (ps.dir === 'long') {
+      // 停損 = 日內結構（低點−30）與 1×波動距離取較緊者，且不少於 3 倍成本
+      let stop = Math.round(Math.max(idLow !== null ? idLow - 30 : ps.entry - stopDist, ps.entry - stopDist));
+      if (ps.entry - stop < costPts * 3) stop = Math.round(ps.entry - Math.max(costPts * 3, 60));
+      if (p.frontLast <= stop) {
+        // 現價已跌破停損參考：紀律上早該出場，不能假装沒事續抱
+        const altStop = Math.round(idLow !== null ? idLow - 30 : ps.entry - stopDist * 1.5);
+        advice = `⚠ 現價 ${Math.round(p.frontLast).toLocaleString()} 已跌破你的停損參考 ${stop.toLocaleString()} 點——依交易紀律這筆部位早該出場，目前等於「止損未執行」狀態。① 立即減碼至少一半，不要抱希望凹單；② 若你堅持續抱（引擎 ${s > 0 ? '+' : ''}${s} 分${s >= 4 ? '偏多，尚有依據' : s <= -4 ? '偏空，續抱風險極高' : '中性，續抱勝率無優勢'}），硬性停損必須改設 ${altStop.toLocaleString()} 點（日內低點−30），跌破無條件全數出場；③ 引擎翻多（≥ +4 分）前禁止攤平。`;
+      } else if (engineShort) {
+        advice = `你的多單與引擎總方向「相反」（${s} 分偏空）：勿攤平、勿凹單。${inProfit ? `① 目前還有 +${pnlPts.toFixed(0)} 點獲利，先減碼一半鎖利；` : `① 目前已虧 ${Math.abs(pnlPts).toFixed(0)} 點，${mid >= p.frontLast ? `反彈到日內中點 ${mid.toLocaleString()} 附近先減碼一半止血` : `現價已在日內中點（${mid.toLocaleString()}）上方，逢反彈無力先減碼一半止血`}；`}② 剩餘部位停損 ${stop.toLocaleString()} 點（日內低點−30 緩衝／1×波動距離取較緊者），跌破無條件出場；③ 總分翻正到 +4 以上才考慮重新做多。`;
+      } else if (engineLong) {
+        advice = `你的多單與引擎方向「一致」（+${s} 分偏多），可續抱：${inProfit ? `已獲利 +${pnlPts.toFixed(0)} 點，停損上移到 ${Math.max(stop, Math.round(ps.entry + 20)).toLocaleString()} 點（保本＋鎖利），` : `保護性停損設 ${stop.toLocaleString()} 點，`}跌破才無條件出場。停利參考：+${tpDist} 點（約 ${Math.round(ps.entry + tpDist).toLocaleString()}）先減 1/3～1/2，剩餘用 5 日中位 ${p.p50Pts ? p.p50Pts.toLocaleString() : '--'} 點做目標、移動停損跟著日內低點上移。`;
+      } else {
+        advice = `引擎目前「中性」（${s} 分），多單可抱但勿加碼：停損 ${stop.toLocaleString()} 點跌破就出場；等總分 ≥ +4（轉多）再考慮加碼，若轉 ≤ −4（轉空）先減碼一半。`;
+      }
+      if (p.intraday && p.intraday.score <= -2) advice += ` 注意：盤中態勢已轉弱（${p.intraday.score} 分），即使隔夜結論未翻，先別急著補救或加碼。`;
+    } else {
+      let stop = Math.round(Math.min(idHigh !== null ? idHigh + 30 : ps.entry + stopDist, ps.entry + stopDist));
+      if (stop - ps.entry < costPts * 3) stop = Math.round(ps.entry + Math.max(costPts * 3, 60));
+      if (p.frontLast >= stop) {
+        // 現價已漲破停損參考：紀律上早該回補，不能假装沒事續抱
+        const altStop = Math.round(idHigh !== null ? idHigh + 30 : ps.entry + stopDist * 1.5);
+        advice = `⚠ 現價 ${Math.round(p.frontLast).toLocaleString()} 已漲破你的停損參考 ${stop.toLocaleString()} 點——依交易紀律這筆空單早該回補，目前等於「止損未執行」狀態。① 立即回補至少一半，不要抱希望凹單；② 若你堅持續抱（引擎 ${s > 0 ? '+' : ''}${s} 分${s <= -4 ? '偏空，尚有依據' : s >= 4 ? '偏多，續抱風險極高' : '中性，續抱勝率無優勢'}），硬性停損必須改設 ${altStop.toLocaleString()} 點（日內高點＋30），漲破無條件全數回補；③ 引擎翻空（≤ −4 分）前禁止加空。`;
+      } else if (engineLong) {
+        advice = `你的空單與引擎總方向「相反」（+${s} 分偏多）：勿凹單、勿加空。${inProfit ? `① 目前還有 +${pnlPts.toFixed(0)} 點獲利，先減碼一半鎖利；` : `① 目前已虧 ${Math.abs(pnlPts).toFixed(0)} 點，${mid <= p.frontLast ? `回檔到日內中點 ${mid.toLocaleString()} 附近先減碼一半止血` : `現價已在日內中點（${mid.toLocaleString()}）下方，逢反彈無力先減碼一半止血`}；`}② 剩餘部位停損 ${stop.toLocaleString()} 點（日內高點＋30 緩衝／1×波動距離取較緊者），漲破無條件回補；③ 總分翻負到 −4 以下才考慮重新做空。`;
+      } else if (engineShort) {
+        advice = `你的空單與引擎方向「一致」（${s} 分偏空），可續抱：${inProfit ? `已獲利 +${pnlPts.toFixed(0)} 點，停損下移到 ${Math.min(stop, Math.round(ps.entry - 20)).toLocaleString()} 點（保本＋鎖利），` : `保護性停損設 ${stop.toLocaleString()} 點，`}漲破才無條件回補。停利參考：−${tpDist} 點（約 ${Math.round(ps.entry - tpDist).toLocaleString()}）先減 1/3～1/2，剩餘用 5 日悲觀 ${p.p10Pts ? p.p10Pts.toLocaleString() : '--'} 點做目標、移動停損跟著日內高點下移。`;
+      } else {
+        advice = `引擎目前「中性」（${s} 分），空單可抱但勿加碼：停損 ${stop.toLocaleString()} 點漲破就出場；等總分 ≤ −4（轉空）再考慮加碼，若轉 ≥ +4（轉多）先減碼一半。`;
+      }
+      if (p.intraday && p.intraday.score >= 2) advice += ` 注意：盤中態勢已轉強（+${p.intraday.score} 分），V轉洗刷盤空單勿追低加碼。`;
+    }
+    if (p.intraday && p.intraday.pattern === 'shakeout') advice += ` 當前是劇烈上下洗刷盤：當沖頻繁進出的成本與被雙殺機率高，除非觸及上述停損/停利點位，寧可按兵不動。`;
+    lines.push(`【持倉操作建議】${advice}`);
+  } else if (p.frontLast) {
+    // 尚未買入（空手）：給空手行動方案，而不是假設已有部位
+    const refR = Math.round(p.frontLast);
+    const idHighTxt = p.intraday ? Math.round(p.intraday.high).toLocaleString() : '日內高點';
+    const idLowTxt = p.intraday ? Math.round(p.intraday.low).toLocaleString() : '日內低點';
+    if (dir === 'buy' || dir === 'strong-buy') {
+      lines.push(`【空手行動方案】你目前尚未持有部位。引擎偏多（${s > 0 ? '+' : ''}${s} 分）：① 首選等回檔 ${Math.max(0, refR - zoneDist).toLocaleString()} ~ ${refR.toLocaleString()} 點承接試多（第一筆 ≤ 預定部位 1/3），停損 ${Math.round(refR - stopDist).toLocaleString()} 點（−${stopDist} 點），停利 +${tpDist} 點（約 ${Math.round(refR + tpDist).toLocaleString()}）先減碼；② 若直接放量突破日內高點 ${idHighTxt} 不回，不追高，等回測突破點再進；③ 拿不準就不動——錯過不是虧損，套牢才是。在最上方「🧍 我的未平倉」輸入買/賣方向、張數、均價後，下方建議會立即改成針對你部位的計算。`);
+    } else if (dir === 'sell' || dir === 'strong-sell') {
+      lines.push(`【空手行動方案】你目前尚未持有部位。引擎偏空（${s} 分）：① 等反彈到 ${refR.toLocaleString()} ~ ${Math.round(refR + zoneDist).toLocaleString()} 點、漲不動時試空（第一筆 ≤ 預定部位 1/3），停損 ${Math.round(refR + stopDist).toLocaleString()} 點（+${stopDist} 點）回補，停利 −${tpDist} 點（約 ${Math.round(refR - tpDist).toLocaleString()}）先減碼；② 若已先跌破日內低點 ${idLowTxt}，不追空——洗刷盤追空最容易被 V 轉掃損，等反彈再找賣點；③ 拿不準就不動。在最上方「🧍 我的未平倉」輸入部位後，下方建議會立即改成針對你部位的計算。`);
+    } else {
+      lines.push(`【空手行動方案】你目前尚未持有部位，引擎中性（${s > 0 ? '+' : ''}${s} 分）——現在「不該進場」，做多做空都沒有優勢勝率。進場只認兩個觸發條件：① 回檔到 ${Math.max(0, refR - zoneDist).toLocaleString()} 點附近且 15 分鐘動能轉正 → 試多（停損 −${stopDist} 點）；② 反彈到 ${Math.round(refR + zoneDist).toLocaleString()} 點附近無力且動能轉負 → 試空（停損 +${stopDist} 點）。條件沒出現就維持空手——空手也是一種部位。在最上方「🧍 我的未平倉」輸入後即啟動部位專屬建議。`);
+    }
+  }
+
+  // ── 一句話大白話結論（動態距離，已棄用固定 ±100 點）──
+  if (ref) {
+    const refR0 = Math.round(ref);
+    if (dir === 'buy' || dir === 'strong-buy') {
+      lines.push(`【一句話結論】現在「建議買」（做多）。買點：回檔到 ${Math.max(0, refR0 - zoneDist).toLocaleString()} ~ ${refR0.toLocaleString()} 點之間分批買；跌破 ${Math.round(refR0 - stopDist).toLocaleString()} 點（−${stopDist} 點，波動率校準）就認賠出場；停利目標 +${tpDist} 點（約 ${Math.round(refR0 + tpDist).toLocaleString()}）。`);
+    } else if (dir === 'sell' || dir === 'strong-sell') {
+      lines.push(`【一句話結論】現在「建議賣」（做空或不要買）。賣點：反彈到 ${refR0.toLocaleString()} ~ ${Math.round(refR0 + zoneDist).toLocaleString()} 點之間賣不出力就是賣點；漲破 ${Math.round(refR0 + stopDist).toLocaleString()} 點（+${stopDist} 點，波動率校準）就認賠出場；停利目標 −${tpDist} 點（約 ${Math.round(refR0 - tpDist).toLocaleString()}）。`);
+    } else {
+      lines.push(`【一句話結論】現在「不建議買也不建議賣」，觀望等機會。等價格跌到 ${Math.max(0, refR0 - zoneDist).toLocaleString()} 點附近才可以考慮買（停損 −${stopDist} 點），等價格漲到 ${Math.round(refR0 + zoneDist).toLocaleString()} 點附近才可以考慮賣（停損 +${stopDist} 點），現在這個位置兩邊都不划算。`);
+    }
   }
 
   // ── 盤中現況（2026-11-17 教訓核心：上下洗刷時必須給「目前正發生什麼狀況」+ 當下意見）──
@@ -1029,19 +1118,20 @@ function buildVerdict(p: {
     lines.push(`【5日點數區間】參考近月 ${Math.round(ref).toLocaleString()} 點：悲觀 ${p.p10Pts.toLocaleString()} ／ 中位 ${p.p50Pts.toLocaleString()} ／ 樂觀 ${p.p90Pts.toLocaleString()} 點。`);
   }
 
-  // ── 當下買賣點（±100 點區間 + 時段偵測）──
+  // ── 當下買賣點（動態波動率區間 + 日內結構停損 + 時段偵測；已棄用固定 ±100 點）──
   if (ref) {
     const refR = Math.round(ref);
-    const buyLow = refR - R, buyHigh = refR;
-    const sellLow = refR, sellHigh = refR + R;
-    const stopLong = (p.todayLow ? Math.min(buyLow - 30, Math.round(p.todayLow) - 30) : buyLow - R);
-    const stopShort = (p.todayHigh ? Math.max(sellHigh + 30, Math.round(p.todayHigh) + 30) : sellHigh + R);
+    const buyLow = Math.max(0, refR - zoneDist), buyHigh = refR;
+    const sellLow = refR, sellHigh = refR + zoneDist;
+    // 停損 = 日內結構（低點/高點 ±30 緩衝）與 1×波動距離取較緊者
+    const stopLong = Math.round(p.todayLow ? Math.max(Math.min(p.todayLow, buyLow) - 30, refR - stopDist) : refR - stopDist);
+    const stopShort = Math.round(p.todayHigh ? Math.min(Math.max(p.todayHigh, sellHigh) + 30, refR + stopDist) : refR + stopDist);
     if (dir === 'buy' || dir === 'strong-buy') {
-      lines.push(`【怎麼買】在 ${buyLow.toLocaleString()} ~ ${buyHigh.toLocaleString()} 點之間分批買進（不要一次全下）。如果跌破 ${Math.round(stopLong).toLocaleString()} 點，代表看錯方向，賣掉認賠，大約虧 ${R + 30} 點。目標先看漲回 ${refR.toLocaleString()} 點以上。`);
+      lines.push(`【怎麼買】在 ${buyLow.toLocaleString()} ~ ${buyHigh.toLocaleString()} 點之間分批買進（第一筆 ≤ 預定部位 1/3，不要一次全下）。跌破 ${stopLong.toLocaleString()} 點（日內低點−30 緩衝／−${stopDist} 點波動距離取較緊者）代表看錯方向，賣掉認賠，虧約 ${(refR - stopLong).toLocaleString()} 點。停利：+${tpDist} 點（約 ${Math.round(refR + tpDist).toLocaleString()}）先減碼，強勢再留尾倉看 5 日樂觀 ${p.p90Pts ? p.p90Pts.toLocaleString() : '--'} 點。`);
     } else if (dir === 'sell' || dir === 'strong-sell') {
-      lines.push(`【怎麼賣】價格反彈到 ${sellLow.toLocaleString()} ~ ${sellHigh.toLocaleString()} 點、漲不上去的時候賣出（放空或出脫手中多單）。如果漲破 ${Math.round(stopShort).toLocaleString()} 點，代表看錯方向，買回認賠，大約虧 ${R + 30} 點。`);
+      lines.push(`【怎麼賣】價格反彈到 ${sellLow.toLocaleString()} ~ ${sellHigh.toLocaleString()} 點、漲不上去的時候賣出（放空或出脫手中多單）。漲破 ${stopShort.toLocaleString()} 點（日內高點＋30 緩衝／+${stopDist} 點波動距離取較緊者）代表看錯方向，買回認賠，虧約 ${(stopShort - refR).toLocaleString()} 點。停利：−${tpDist} 點（約 ${Math.round(refR - tpDist).toLocaleString()}）先減碼，弱勢再留尾倉看 5 日悲觀 ${p.p10Pts ? p.p10Pts.toLocaleString() : '--'} 點。`);
     } else {
-      lines.push(`【怎麼操作】現在不要追。只有兩種情況才動手：① 價格跌到 ${buyLow.toLocaleString()} ~ ${buyHigh.toLocaleString()} 點 → 可以買，跌破 ${Math.round(stopLong).toLocaleString()} 點認賠；② 價格漲到 ${sellLow.toLocaleString()} ~ ${sellHigh.toLocaleString()} 點漲不動 → 可以賣，漲破 ${Math.round(stopShort).toLocaleString()} 點認賠。價格在這兩個區間中間 = 什麼都不做。`);
+      lines.push(`【怎麼操作】現在不要追。只有兩種情況才動手：① 價格跌到 ${buyLow.toLocaleString()} ~ ${buyHigh.toLocaleString()} 點且跌不動 → 可以買，跌破 ${stopLong.toLocaleString()} 點認賠；② 價格漲到 ${sellLow.toLocaleString()} ~ ${sellHigh.toLocaleString()} 點漲不動 → 可以賣，漲破 ${stopShort.toLocaleString()} 點認賠。價格在這兩個區間中間 = 什麼都不做。`);
     }
   }
 

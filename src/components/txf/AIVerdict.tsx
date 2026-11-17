@@ -64,11 +64,23 @@ export default function AIVerdict() {
 
   const load = () => {
     setErr(false);
-    fetch('/api/ai-verdict').then(r => r.json()).then((d: Verdict) => {
+    // 我的未平倉（MyPosition 元件存於 localStorage）→ 附給引擎，產出【我的持倉】【持倉操作建議】
+    let qs = '';
+    try {
+      const p = JSON.parse(localStorage.getItem('txf-my-position') || 'null');
+      if (p && (p.dir === 'long' || p.dir === 'short') && p.qty > 0 && p.entry > 0)
+        qs = `?pos=${p.dir}&qty=${p.qty}&entry=${p.entry}&item=${p.item === 'MXF' ? 'MXF' : 'TXF'}`;
+    } catch { /* ignore */ }
+    fetch('/api/ai-verdict' + qs).then(r => r.json()).then((d: Verdict) => {
       if (d && d.ok) setV(d); else setErr(true);
     }).catch(() => setErr(true));
   };
-  useEffect(() => { load(); const t = setInterval(load, 20 * 1000); return () => clearInterval(t); }, []); // 即時刷新：20秒同步（後端上游已有5秒快取去重）
+  useEffect(() => {
+    load(); const t = setInterval(load, 20 * 1000);
+    const h = () => load(); // 持倉輸入變更 → 立即重算建議
+    window.addEventListener('txf-pos-change', h);
+    return () => { clearInterval(t); window.removeEventListener('txf-pos-change', h); };
+  }, []); // 即時刷新：20秒同步（後端上游已有5秒快取去重）
 
   if (err) return (
     <div className="panel" style={{ padding: 16 }}>
@@ -97,7 +109,7 @@ export default function AIVerdict() {
             const fmt = (tz: string) => g.toLocaleTimeString('zh-TW', { timeZone: tz, hour12: false });
             return <>台北 {fmt('Asia/Taipei')} ｜ 越南 {fmt('Asia/Ho_Chi_Minh')} ｜ 美東 {fmt('America/New_York')}</>;
           })()}
-          <br />每 5 分鐘自動更新｜樣本 {v.stats.sample}
+          <br />每 20 秒自動更新｜樣本 {v.stats.sample}
         </div>
       </div>
 
