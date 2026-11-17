@@ -44,7 +44,7 @@ export async function GET() {
   const mm = nowCST.getUTCMinutes() < 30 ? '00' : '30';
   const slotHM = nowCST.toISOString().slice(11, 13) + ':' + mm;
 
-  const [txfQuotes, esQ, nqQ, twnQ, smhQ, vixQ, nvdaQ, a50Txt] = await Promise.all([
+  const [txfQuotes, esQ, nqQ, twnQ, smhQ, vixQ, nvdaQ, a50Txt, twii3m] = await Promise.all([
     // 雙源取新：MT1 feed 可能整天停滯在上一交易日
     fetchMisQuoteList('TXF').then(r => r.quotes).catch(() => [] as MisQuote[]),
     fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/ES%3DF?interval=1d&range=5d'),
@@ -55,7 +55,31 @@ export async function GET() {
     fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/NVDA?interval=1d&range=5d'),
     fetch('https://query1.finance.yahoo.com/v7/finance/quote?symbols=SGX%3ACN%3AFU0%3AY', { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(12000) })
       .then(r => r.text()).catch(() => ''),
+    // ^TWII 3 個月日線 → 日波動 σ（點）。教訓（2026-11-18）：固定 ±60/150/100 點屬日內尺度，
+    // 用戶要求「至少按照我的週期給建議」→ 進場區間/停損/停利改用 σ 比例（波段尺度）。
+    fetchJson('https://query1.finance.yahoo.com/v8/finance/chart/%5ETWII?interval=1d&range=3mo'),
   ]);
+
+  // 日 σ（點）與週期 σ（T+2 交易日 → ×√2）
+  let sigD: number | null = null;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const c = ((twii3m as any)?.chart?.result?.[0]?.indicators?.quote?.[0]?.close || []).filter((x: number | null) => x) as number[];
+    if (c.length >= 20) {
+      const rs: number[] = [];
+      for (let i = 1; i < c.length; i++) rs.push(c[i] / c[i - 1] - 1);
+      const m = rs.reduce((a, b) => a + b, 0) / rs.length;
+      sigD = Math.sqrt(rs.reduce((a, b) => a + (b - m) * (b - m), 0) / (rs.length - 1)) * c[c.length - 1];
+    }
+  } catch { /* ignore */ }
+
+  // 波段評估週期（與 /api/ai-verdict 相同規則）：T+2 交易日夜盤收盤；週五給評估自動延長至下週二
+  const cycleEndLabel = (() => {
+    const d = new Date(nowCST); d.setUTCHours(0, 0, 0, 0);
+    let added = 0;
+    while (added < 2) { d.setUTCDate(d.getUTCDate() + 1); const wd = d.getUTCDay(); if (wd >= 1 && wd <= 5) added++; }
+    return `${d.getUTCMonth() + 1}/${d.getUTCDate()}（週${['日', '一', '二', '三', '四', '五', '六'][d.getUTCDay()]}）夜盤收盤`;
+  })();
 
   // 台指期近月價
   let frontLast: number | null = null;
@@ -111,22 +135,27 @@ export async function GET() {
   const dir = score >= 5 ? '多' : score <= -5 ? '空' : '觀望';
   const ref = frontLast;
 
-  // ── 大白話建議 + 區間 + 平倉條件 ──
+  // ── 大白話建議 + 區間 + 平倉條件（波段尺度：以週期 σ 為單位，勿太快進快出）──
+  // 進場緩衝 ≈ 0.3σ_cycle、停利 ≈ 1.6σ_cycle、停損 ≈ 0.7σ_cycle（σ_cycle = 日σ×√2）
+  const sigC = sigD !== null ? sigD * Math.SQRT2 : (ref ? ref * 0.016 : 600);
+  const zoneD = Math.max(40, Math.min(800, Math.round(sigC * 0.3)));
+  const tpD = Math.max(120, Math.min(3000, Math.round(sigC * 1.6)));
+  const slD = Math.max(60, Math.min(1800, Math.round(sigC * 0.7)));
   let advice: string, zone: string, exitRule: string;
   if (ref === null) {
     advice = '無法取得台指期現價'; zone = '--'; exitRule = '--';
   } else if (dir === '多') {
-    advice = '建議買（做多）';
-    zone = `買 ${Math.round(ref - 60).toLocaleString()} ~ ${Math.round(ref).toLocaleString()}`;
-    exitRule = `漲到 ${Math.round(ref + 150).toLocaleString()} 以上先賣一半平倉；跌破 ${Math.round(ref - 100).toLocaleString()} 全部認賠出場`;
+    advice = '建議買（做多・波段）';
+    zone = `買 ${Math.round(ref - zoneD).toLocaleString()} ~ ${Math.round(ref).toLocaleString()}`;
+    exitRule = `波段持有至 ${cycleEndLabel} 前：漲到 ${Math.round(ref + tpD).toLocaleString()}（+${tpD} 點）先賣一半，剩餘移動停利；跌破 ${Math.round(ref - slD).toLocaleString()}（−${slD} 點）全部認賠出場`;
   } else if (dir === '空') {
-    advice = '建議賣（做空/多單平倉）';
-    zone = `反彈到 ${Math.round(ref).toLocaleString()} ~ ${Math.round(ref + 60).toLocaleString()} 再賣`;
-    exitRule = `跌到 ${Math.round(ref - 150).toLocaleString()} 以下買回平倉；漲破 ${Math.round(ref + 100).toLocaleString()} 認賠出場`;
+    advice = '建議賣（做空/多單平倉・波段）';
+    zone = `反彈到 ${Math.round(ref).toLocaleString()} ~ ${Math.round(ref + zoneD).toLocaleString()} 再賣`;
+    exitRule = `波段持有至 ${cycleEndLabel} 前：跌到 ${Math.round(ref - tpD).toLocaleString()}（−${tpD} 點）買回一半，剩餘移動停利；漲破 ${Math.round(ref + slD).toLocaleString()}（+${slD} 點）認賠出場`;
   } else {
     advice = '不建議買也不建議賣';
-    zone = `跌到 ${Math.round(ref - 100).toLocaleString()} 才考慮買；漲到 ${Math.round(ref + 100).toLocaleString()} 才考慮賣`;
-    exitRule = '沒有持倉就不用動作；有持倉者等方向明確（分數 ≥5 或 ≤−5）再決定加減碼';
+    zone = `跌到 ${Math.round(ref - zoneD).toLocaleString()} 才考慮買；漲到 ${Math.round(ref + zoneD).toLocaleString()} 才考慮賣`;
+    exitRule = `沒有持倉就不用動作；有持倉者等方向明確（分數 ≥5 或 ≤−5）再決定加減碼。評估週期至 ${cycleEndLabel}`;
   }
 
   // 時段標籤（TXF：日盤 08:45–13:45、夜盤 15:00–次日 05:00，週六凌晨屬週五夜盤）
@@ -143,7 +172,7 @@ export async function GET() {
   if (isUSOpen && phaseLabel === '週末休市' && dow === 6) phaseLabel = '週末休市（美股盤中）';
 
   // 預期盤勢：說明這筆建議「預期哪個時段的盤勢 + 原因」（用戶要求不可只給方向不給理由）
-  const outlook = buildOutlook(dir, phaseLabel, score, drivers.join('；'));
+  const outlook = buildOutlook(dir, phaseLabel, score, [...drivers, `波段評估週期至 ${cycleEndLabel}（只給波段建議、不給長線）`].join('；'));
 
   return NextResponse.json({
     ok: true,
@@ -152,6 +181,7 @@ export async function GET() {
     slot: `${dateStr} ${slotHM}`,
     hm, phaseLabel,
     ref, score, dir, advice, zone, exitRule,
+    cycleEndLabel, sigCyclePts: Math.round(sigC), tpPts: tpD, slPts: slD,
     drivers: drivers.join('｜'),
     outlook,
     live: { es, nq, twn, smh, nvda, vix, a50Chg },

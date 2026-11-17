@@ -11,13 +11,17 @@ import { useEffect, useState, useCallback } from 'react';
 
 export const POS_KEY = '***';
 export type PosDir = 'none' | 'long' | 'short';
-export interface MyPos { item: 'TXF' | 'MXF'; dir: PosDir; qty: number; entry: number | null }
+export interface MyPos { item: 'TXF' | 'MXF' | 'TMF'; dir: PosDir; qty: number; entry: number | null }
 
-const MULT: Record<string, number> = { TXF: 200, MXF: 50 };
-const ITEM_LABEL: Record<string, string> = { TXF: '台指期 TXF（每點 200 元）', MXF: '小台指 MXF（每點 50 元）' };
+const MULT: Record<string, number> = { TXF: 200, MXF: 50, TMF: 10 };
+const ITEM_LABEL: Record<string, string> = {
+  TXF: '台指期 TXF 大台（每點 200 元）',
+  MXF: '小台指 MXF 小台（每點 50 元）',
+  TMF: '微台指 TMF 微台（每點 10 元）',
+};
 
 export default function MyPosition() {
-  const [item, setItem] = useState<'TXF' | 'MXF'>('TXF');
+  const [item, setItem] = useState<'TXF' | 'MXF' | 'TMF'>('TXF');
   const [dir, setDir] = useState<PosDir>('none');
   const [qty, setQty] = useState('');
   const [entry, setEntry] = useState('');
@@ -103,9 +107,10 @@ export default function MyPosition() {
       </div>
 
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 10 }}>
-        <select value={item} onChange={e => setItem(e.target.value as 'TXF' | 'MXF')} style={{ ...inp, width: 'auto' }}>
+        <select value={item} onChange={e => setItem(e.target.value as 'TXF' | 'MXF' | 'TMF')} style={{ ...inp, width: 'auto' }}>
           <option value="TXF">{ITEM_LABEL.TXF}</option>
           <option value="MXF">{ITEM_LABEL.MXF}</option>
+          <option value="TMF">{ITEM_LABEL.TMF}</option>
         </select>
         <button style={btn(dir === 'long', '#f85149')} onClick={() => setDir('long')}>買（做多）</button>
         <button style={btn(dir === 'short', '#3fb950')} onClick={() => setDir('short')}>賣（做空）</button>

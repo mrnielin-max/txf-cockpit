@@ -31,6 +31,18 @@ interface Verdict {
   };
   lowForecast: { text: string; window: string; passed: boolean };
   sqDate: string;
+  cycle: { days: number; lastDay: string; lastDayLabel: string; endLabel: string; note: string };
+  cycleCurve: { base: number; labels: string[]; p10: number[]; p25: number[]; p50: number[]; p75: number[]; p90: number[] } | null;
+  levels: {
+    item: string; itemName: string; mult: number; qty: number;
+    margin: number; capital: number; capitalNote: string; callBufferPts: number;
+    anchor: number; anchorNote: string; dir: 'long' | 'short';
+    sigCyclePts: number; costPts: number;
+    sl: { name: string; kind: string; idx: number; dist: number; price: number; twd: number; capPct: number }[];
+    tp: { name: string; kind: string; idx: number; dist: number; price: number; twd: number; capPct: number }[];
+    rr: number; rule: string;
+  } | null;
+  tech: { ma20: number | null; ma60: number | null; ma240: number | null; ma240Rising: boolean | null; distMa240Pct: number | null; rsi14: number | null };
   verdict: { action: string; actionColor: string; confidence: string; lines: string[]; dir: string };
   assessment: {
     narrative: string[];
@@ -69,10 +81,14 @@ export default function AIVerdict() {
     try {
       const p = JSON.parse(localStorage.getItem('txf-my-position') || 'null');
       if (p && (p.dir === 'long' || p.dir === 'short') && p.qty > 0 && p.entry > 0)
-        qs = `?pos=${p.dir}&qty=${p.qty}&entry=${p.entry}&item=${p.item === 'MXF' ? 'MXF' : 'TXF'}`;
+        qs = `?pos=${p.dir}&qty=${p.qty}&entry=${p.entry}&item=${['TXF', 'MXF', 'TMF'].includes(p.item) ? p.item : 'TXF'}`;
     } catch { /* ignore */ }
     fetch('/api/ai-verdict' + qs).then(r => r.json()).then((d: Verdict) => {
-      if (d && d.ok) setV(d); else setErr(true);
+      if (d && d.ok) {
+        setV(d);
+        // 廣播完整判定資料：「週期統整評估模擬」曲線圖面板共用同一份資料（避免重複打重端點）
+        window.dispatchEvent(new CustomEvent('txf-verdict-data', { detail: d }));
+      } else setErr(true);
     }).catch(() => setErr(true));
   };
   useEffect(() => {
@@ -148,11 +164,11 @@ export default function AIVerdict() {
             </div>
           </div>
           <div style={{ background: '#0d1117', borderRadius: 10, padding: '8px 16px', border: '1px solid #30363d' }}>
-            <div style={{ color: '#8b949e', fontSize: 11 }}>未來 5 日上漲機率</div>
+            <div style={{ color: '#8b949e', fontSize: 11 }}>週期內上漲機率（至 {v.cycle.lastDayLabel} 夜盤收）</div>
             <div style={{ fontSize: 22, fontWeight: 800, color: '#f85149', fontVariantNumeric: 'tabular-nums' }}>{sim.up5Prob}%</div>
           </div>
           <div style={{ background: '#0d1117', borderRadius: 10, padding: '8px 16px', border: '1px solid #30363d' }}>
-            <div style={{ color: '#8b949e', fontSize: 11 }}>未來 5 日下跌機率</div>
+            <div style={{ color: '#8b949e', fontSize: 11 }}>週期內下跌機率</div>
             <div style={{ fontSize: 22, fontWeight: 800, color: '#3fb950', fontVariantNumeric: 'tabular-nums' }}>{sim.down5Prob}%</div>
           </div>
           <div style={{ background: '#0d1117', borderRadius: 10, padding: '8px 16px', border: '1px solid #30363d' }}>
@@ -187,9 +203,9 @@ export default function AIVerdict() {
         </div>
       </div>
 
-      {/* 5日模擬區間 */}
+      {/* 週期模擬區間 */}
       <div style={{ padding: '14px 20px', borderBottom: '1px solid #21262d' }}>
-        <div style={{ color: '#8b949e', fontSize: 13, marginBottom: 8 }}>📊 蒙地卡羅模擬（{sim.n.toLocaleString()} 次路徑 × {sim.horizon} 日，Bootstrap 實際日報酬 + 訊號 drift）</div>
+        <div style={{ color: '#8b949e', fontSize: 13, marginBottom: 8 }}>📊 蒙地卡羅模擬（{sim.n.toLocaleString()} 次路徑 × {sim.horizon} 個交易日，至 {v.cycle.endLabel}；Bootstrap 實際日報酬 + 訊號 drift）</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
           <div style={{ background: '#0d1117', borderRadius: 8, padding: '8px 12px', border: '1px solid #21262d' }}>
             <div style={{ color: '#8b949e', fontSize: 11 }}>悲觀情境 P10</div>

@@ -8,6 +8,7 @@ import ContributionPanel from '@/components/ContributionPanel';
 import InstitutionsPanel from '@/components/InstitutionsPanel';
 import CalendarPanel from '@/components/CalendarPanel';
 import AIVerdict from '@/components/txf/AIVerdict';
+import CycleSimChart from '@/components/txf/CycleSimChart';
 import MyPosition from '@/components/txf/MyPosition';
 import AdviceLog from '@/components/txf/AdviceLog';
 import AutoReview from '@/components/txf/AutoReview';
@@ -70,6 +71,9 @@ export default function Home() {
 
           {/* ⑦ AI 決策引擎（最下方統整專欄）：多因子評分 + 蒙地卡羅模擬 + 買賣時點建議 */}
           <AIVerdict />
+
+          {/* ⑦b 週期統整評估模擬：扇形曲線圖 + 多組建議止盈/止損點位（隨未平倉輸入連動） */}
+          <CycleSimChart />
 
           {/* ⑧ 每 30 分鐘建議紀錄：整點/半點自動存檔的買/賣/觀望快照 */}
           <AdviceLog />

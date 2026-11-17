@@ -66,6 +66,15 @@ const ALERT_KEYWORDS = [
 
 interface Factor { key: string; label: string; score: number; detail: string; }
 interface NewsAlert { title: string; keyword: string; source: string; }
+interface LevelPt { name: string; kind: 'sl' | 'tp'; idx: number; dist: number; price: number; twd: number; capPct: number; }
+interface LevelsOut {
+  item: string; itemName: string; mult: number; qty: number;
+  margin: number; capital: number; capitalNote: string; callBufferPts: number;
+  anchor: number; anchorNote: string; dir: 'long' | 'short';
+  sigCyclePts: number; costPts: number;
+  sl: LevelPt[]; tp: LevelPt[]; rr: number; rule: string;
+}
+interface CycleOut { days: number; lastDay: string; lastDayLabel: string; endLabel: string; note: string; }
 
 function num(v: unknown): number | null {
   const n = typeof v === 'number' ? v : parseFloat(String(v ?? '').replace(/,/g, ''));
@@ -217,9 +226,11 @@ export async function GET(req: Request) {
   const posDirRaw = q.get('pos');
   const posQty = Math.max(0, Math.min(9999, parseInt(q.get('qty') || '0', 10) || 0));
   const posEntry = parseFloat(q.get('entry') || '') || null;
-  const posItem = q.get('item') === 'MXF' ? 'MXF' : 'TXF';
+  const posItemRaw = q.get('item') || 'TXF';
+  const posItem = posItemRaw === 'MXF' ? 'MXF' : posItemRaw === 'TMF' ? 'TMF' : 'TXF';
+  const POS_MULT: Record<string, number> = { TXF: 200, MXF: 50, TMF: 10 };
   const pos = (posDirRaw === 'long' || posDirRaw === 'short') && posQty > 0 && posEntry && posEntry > 1000 && posEntry < 200000
-    ? { dir: posDirRaw as 'long' | 'short', qty: posQty, entry: posEntry, mult: posItem === 'MXF' ? 50 : 200, item: posItem }
+    ? { dir: posDirRaw as 'long' | 'short', qty: posQty, entry: posEntry, mult: POS_MULT[posItem], item: posItem }
     : null;
   const [txfQuotes, chipsTxt, twii1d, twii5m, spx1d, vixQ, tsmQ, a50Txt, nvdaQ, soxQ, twdQ, tnxQ, dxyQ, goldQ, oilQ, tsmAdrQ, esQ, nqQ, twnQ, smhQ, tsm5mQ, pttXml, ewtOpt, twii5y, socialTitles, newsAlerts] = await Promise.all([
     // 雙源取新（MT1 feed 可能整天停滯在上一交易日）
@@ -525,6 +536,33 @@ export async function GET(req: Request) {
   const streak3Up = last3.length === 3 && last3.every(r => r > 0);
   const lastRet = rets[rets.length - 1] ?? 0;
   const last5Ret = rets.slice(-5).reduce((a, b) => a + b, 0);
+
+  // ── 技術面參數（MA20/60/240 + RSI14 + 年線距離）── 用戶要求：模擬評估要加技術面
+  // 年線（MA240）與其 20 日前斜率需要 ≥260 根日線 → 用 ^TWII 5 年序列（twii5y）計算；1 年序列僅 250 根不夠
+  const closes5y: number[] = [];
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const c5 = ((twii5y as any)?.chart?.result?.[0]?.indicators?.quote?.[0]?.close || []) as (number | null)[];
+    for (const v of c5) if (v) closes5y.push(v);
+  } catch { /* ignore */ }
+  const maSrc = closes5y.length >= 260 ? closes5y : closes;
+  const maN = (arr: number[], n: number, shift = 0): number | null => {
+    const end = arr.length - shift;
+    if (end < n) return null;
+    let s = 0; for (let i = end - n; i < end; i++) s += arr[i];
+    return s / n;
+  };
+  const ma20 = maN(closes, 20), ma60 = maN(closes, 60);
+  const ma240 = maN(maSrc, 240), ma240prev = maN(maSrc, 240, 20);
+  const lastC = maSrc[maSrc.length - 1] ?? closes[closes.length - 1] ?? null;
+  const distMa240Pct = ma240 !== null && lastC !== null ? (lastC / ma240 - 1) * 100 : null;
+  const ma240Rising = ma240 !== null && ma240prev !== null ? ma240 > ma240prev : null;
+  let rsi14: number | null = null;
+  if (rets.length >= 15) {
+    let g = 0, l = 0;
+    for (const r of rets.slice(-14)) { if (r > 0) g += r; else l -= r; }
+    rsi14 = l === 0 ? 100 : 100 - 100 / (1 + g / l);
+  }
   const basis = frontLast !== null && spot !== null ? frontLast - spot : null;
   const basisPct = basis !== null && spot ? (basis / spot) * 100 : null;
 
@@ -755,6 +793,38 @@ export async function GET(req: Request) {
     if (nsfProb >= 30) add('nsf', '國安基金入場機率', 1, `入場機率估算 ${nsfProb}% → ${nsfLevel}。依據：${nsfReasons.slice(0, 3).join('；') || '無'}。護盤資金若入場短期有下檔支撐（利多）；此為模型推估、非官方宣布`);
     else add('nsf', '國安基金入場機率', 0, `入場機率估算 ${nsfProb}% → ${nsfLevel}。法定啟動要件（國際金融顯著波動/外資大額抽逃/重大事件）目前未成立${nsfReasons.length ? '：' + nsfReasons.slice(0, 2).join('；') : ''}`);
   }
+  // F11k4 技術面均線結構（用戶要求：模擬評估加入技術面參數）
+  if (ma20 !== null && ma60 !== null && lastC !== null) {
+    const above20 = lastC > ma20, bullAlign = ma20 > ma60;
+    let s = 0;
+    const parts: string[] = [];
+    if (above20 && bullAlign) { s += 2; parts.push(`收盤 ${Math.round(lastC).toLocaleString()} 在 MA20（${Math.round(ma20).toLocaleString()}）之上且短均多頭排列（MA20 > MA60 ${Math.round(ma60).toLocaleString()}）`); }
+    else if (!above20 && !bullAlign) { s -= 2; parts.push(`收盤 ${Math.round(lastC).toLocaleString()} 跌破 MA20（${Math.round(ma20).toLocaleString()}）且短均空頭排列（MA20 < MA60 ${Math.round(ma60).toLocaleString()}）`); }
+    else parts.push(`均線糾結：收盤 ${Math.round(lastC).toLocaleString()}、MA20 ${Math.round(ma20).toLocaleString()}、MA60 ${Math.round(ma60).toLocaleString()}，方向待確認`);
+    if (rsi14 !== null) {
+      if (rsi14 >= 70) { s -= 1; parts.push(`RSI14=${rsi14.toFixed(0)} 超買（短線追高風險）`); }
+      else if (rsi14 <= 30) { s += 1; parts.push(`RSI14=${rsi14.toFixed(0)} 超賣（短線反彈機率高）`); }
+      else parts.push(`RSI14=${rsi14.toFixed(0)} 中性`);
+    }
+    add('tech', '技術面均線結構', Math.max(-3, Math.min(3, s)), parts.join('；'));
+  }
+  // F11k5 年線（MA240）觀察因子 — 用戶提問「靠近年線拉升機率比較高」是否為真？
+  // 已用 ^TWII 20 年真實資料回測驗證（2026-11-18）：收盤距年線 ±2% 內事件（20 日去重）共 62 次：
+  //   後續 20 日上漲機率 67.7% vs 基準 60.3%（溫和優於基準）
+  //   後續 5 日上漲機率 53.2% vs 基準 58.0%（短線反而不如基準）
+  //   年線走平/下行時靠近年線：20 日上漲機率 74.4%（n=43，多為空頭末期均值回歸）
+  //   年線上行且價在年線上：20 日上漲機率 60.7% vs 其他 59.0%（差異有限）
+  // 結論：年線效應「部分成立但溫和」，僅 20 日波段尺度有勝率優勢、樣本僅 62 次，
+  // 不足以當強信號 → 只給 ±1 觀察權重，敘事中誠實標註，不把傳聞當事實。
+  if (distMa240Pct !== null && ma240 !== null) {
+    const rising = ma240Rising === true;
+    let s = 0;
+    if (Math.abs(distMa240Pct) <= 2) s = rising ? 1 : 0;   // 靠近年線：年線上行時溫和偏多（回測 20 日 67.7% vs 60.3%）
+    else if (distMa240Pct > 2 && rising) s = 1;             // 年線上行多頭趨勢
+    else if (distMa240Pct < -2 && !rising) s = -1;          // 年線下行空頭趨勢
+    add('ma240', '年線（MA240）觀察', s,
+      `現價${distMa240Pct >= 0 ? '高於' : '低於'}年線 ${Math.abs(distMa240Pct).toFixed(1)}%（年線 ${Math.round(ma240).toLocaleString()}，${rising ? '上行' : ma240Rising === false ? '走平/下行' : '方向不明'}）。20 年回測：靠近年線 ±2% 事件 62 次，後續 20 日上漲機率 67.7%（基準 60.3%）、但 5 日僅 53.2%（基準 58.0%）→「靠近年線拉升」只在 20 日波段尺度溫和成立、短線無優勢、樣本少，故僅列 ±1 觀察因子，不作主要進場依據。`);
+  }
   // F12 重大事件（新聞掃描；命中負面關鍵字扣分）
   const severeKw = ['辭職', '請辭', '閃辭', '崩盤', '暴跌', '崩跌', '戰爭', '宣戰', '開戰', '金融危機', '股災', '破產', '制裁'];
   const severeHits = newsAlerts.filter(a => severeKw.some(k => a.keyword === k || a.title.includes(k)));
@@ -764,7 +834,7 @@ export async function GET(req: Request) {
   else add('news', '重大事件警示', 0, `近3日無重大黑天鵝事件命中`);
 
   const totalScore = factors.reduce((a, f) => a + f.score, 0);
-  const maxScore = 42; // 因子加總上限（uslive ±6 + intraday ±3 + tsmlive/pcr/sq/ptt/social 各 ±2 + nsf +1 後）
+  const maxScore = 46; // 因子加總上限（uslive ±6 + intraday ±3 + tech ±3 + tsmlive/pcr/sq/ptt/social/nsf 各 ±2 + ma240 ±1 後）
   const scoreRatio = totalScore / maxScore;
 
   // 分數帶對應
@@ -776,11 +846,42 @@ export async function GET(req: Request) {
   else if (scoreRatio >= SCORE_BANDS.sell.min) band = SCORE_BANDS.sell;
   else band = SCORE_BANDS.strongSell;
 
-  // ════════ 蒙地卡羅模擬 ════════
+  // ════════ 波段評估週期（用戶規則 2026-11-18）════════
+  // 週期 = 現在 → T+2「交易日」的夜盤收盤（該日隔日凌晨 05:00 台北時間）。
+  // 例：週一 17 日評估 → 19 日（週三）夜盤收盤 = 20 日凌晨 05:00。
+  // 週五評估 → 自動延長：下週一(1)、下週二(2) → 下週二夜盤收盤。
+  // 只給週期內「波段建議」，不給長線建議、也不做太快進快出（用戶要求）。
+  const H = 2;
+  const cycle = (() => {
+    const d = new Date(nowCST);
+    d.setUTCHours(0, 0, 0, 0);
+    const startWd = d.getUTCDay();
+    let added = 0;
+    while (added < H) {
+      d.setUTCDate(d.getUTCDate() + 1);
+      const wd = d.getUTCDay();
+      if (wd >= 1 && wd <= 5) added++;
+    }
+    const lastDay = new Date(d);                 // 週期最後交易日
+    const end = new Date(d);                     // 夜盤收盤 = 隔日 05:00
+    end.setUTCDate(end.getUTCDate() + 1);
+    end.setUTCHours(5, 0, 0, 0);
+    const wdName = ['日', '一', '二', '三', '四', '五', '六'];
+    const md = (x: Date) => `${x.getUTCMonth() + 1}/${x.getUTCDate()}`;
+    return {
+      days: H,
+      lastDay: `${lastDay.getUTCFullYear()}-${String(lastDay.getUTCMonth() + 1).padStart(2, '0')}-${String(lastDay.getUTCDate()).padStart(2, '0')}`,
+      lastDayLabel: `${md(lastDay)}（週${wdName[lastDay.getUTCDay()]}）`,
+      endLabel: `${md(lastDay)}（週${wdName[lastDay.getUTCDay()]}）夜盤收盤 ＝ ${md(end)} 凌晨 05:00（台北時間）`,
+      note: startWd === 5 ? '週五評估：週期自動跨過週末，延長至下週二夜盤收盤' : startWd === 6 || startWd === 0 ? '週末評估：週期自下週一起算 2 個交易日' : '週期規則：評估時點起算 2 個交易日，至第 2 個交易日夜盤收盤（隔日凌晨 05:00）',
+    };
+  })();
+
+  // ════════ 蒙地卡羅模擬（週期 H 個交易日；記錄每日百分位路徑供「週期統整評估模擬」曲線圖）════════
   const driftAdj = scoreRatio * 0.004;
-  const N_SIM = 10000, H = 5;
+  const N_SIM = 10000;
   const paths: number[] = [];
-  const upDay1 = { up: 0, down: 0 };
+  const dayRets: number[][] = Array.from({ length: H }, () => []);  // 各交易日累計報酬樣本
   let rngState = Date.now() & 0x7fffffff;
   const rand = () => { rngState = (rngState * 1103515245 + 12345) & 0x7fffffff; return rngState / 0x7fffffff; };
   const pick = () => rets[Math.floor(rand() * rets.length)] ?? 0;
@@ -790,22 +891,33 @@ export async function GET(req: Request) {
     for (let d = 0; d < H; d++) {
       const r = pick() * 0.6 + driftAdj;
       cum *= 1 + r;
-      if (d === 0) { if (r > 0) upDay1.up++; else upDay1.down++; }
+      dayRets[d].push(cum - 1);
     }
     paths.push(cum - 1);
   }
   paths.sort((a, b) => a - b);
   const pct = (p: number) => paths[Math.floor(p * paths.length)];
-  const up5 = paths.filter(p => p > 0).length / paths.length;
+  const qtl = (arr: number[], q: number) => { const s = [...arr].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.floor(q * s.length))]; };
+  const up5 = paths.filter(p => p > 0).length / paths.length;   // 欄位名沿用；語義 = 週期（H 交易日）內上漲機率
   const down5 = 1 - up5;
   const exp5 = paths.reduce((a, b) => a + b, 0) / paths.length;
-  const d1Up = upDay1.up / N_SIM;
+  const d1Up = dayRets[0].filter(r => r > 0).length / N_SIM;
 
-  // 下一交易日點數區間（P10~P90 → 點數）
+  // 週期末點數區間（P10~P90 → 點數）
   const refPrice = frontLast ?? spotNow;
   const p10Pts = refPrice ? Math.round(refPrice * (1 + pct(0.10))) : null;
   const p50Pts = refPrice ? Math.round(refPrice * (1 + pct(0.50))) : null;
   const p90Pts = refPrice ? Math.round(refPrice * (1 + pct(0.90))) : null;
+  // 每日百分位扇形（P10/P25/P50/P75/P90）→「週期統整評估模擬」曲線圖資料
+  const cycleCurve = refPrice ? {
+    base: Math.round(refPrice),
+    labels: ['現在', ...dayRets.map((_, i) => i === H - 1 ? `${cycle.lastDayLabel} 夜盤收盤` : `+${i + 1} 交易日`)],
+    p10: [Math.round(refPrice), ...dayRets.map(a => Math.round(refPrice * (1 + qtl(a, 0.10))))],
+    p25: [Math.round(refPrice), ...dayRets.map(a => Math.round(refPrice * (1 + qtl(a, 0.25))))],
+    p50: [Math.round(refPrice), ...dayRets.map(a => Math.round(refPrice * (1 + qtl(a, 0.50))))],
+    p75: [Math.round(refPrice), ...dayRets.map(a => Math.round(refPrice * (1 + qtl(a, 0.75))))],
+    p90: [Math.round(refPrice), ...dayRets.map(a => Math.round(refPrice * (1 + qtl(a, 0.90))))],
+  } : null;
 
   // ════════ 盤中低點時間預估（含 SQ 結算週修正）════════
 
@@ -836,7 +948,55 @@ export async function GET(req: Request) {
     lowForecast = { passed: false, window: '09:00-10:00', text: `盤中預估：低點最可能落在 09:00-10:00（近59日統計 54%），次高為 13:00-13:30 尾盤段（19%）。${sqSuffix}` };
   }
 
-  // ════════ 综合建議（含時段偵測 + 點數區間 ±100）════════
+  // ════════ 建議止盈/止損點位（多組；用戶資金規則：3 倍保證金、每次操作 1 口）════════
+  // 保證金：期交所 2026-08-12 公告（大台 TX 701,000／小台 MXF 175,250／微台 TMF 35,050；維持 = 原始×76.7%）
+  // 停損以「週期波動 σ_cycle」為尺度（非日內 σ，避免太快進快出）；停利分三檔：部分/主要/延伸。
+  const levels: LevelsOut | null = (() => {
+    const MARGIN: Record<string, { init: number; maint: number; mult: number; name: string }> = {
+      TXF: { init: 701000, maint: 538000, mult: 200, name: '大台指 TXF' },
+      MXF: { init: 175250, maint: 134500, mult: 50, name: '小台指 MXF' },
+      TMF: { init: 35050, maint: 26900, mult: 10, name: '微台指 TMF' },
+    };
+    if (refPrice === null) return null;
+    const itemKey = pos ? pos.item : 'TXF';
+    const m = MARGIN[itemKey] ?? MARGIN.TXF;
+    const qty = pos?.qty ?? 1;
+    const capital = m.init * 3 * qty;                       // 用戶規則：3 倍保證金
+    const callBuffer = (capital - m.maint * qty) / (m.mult * qty); // 距追繳線可承受點數
+    // 週期 σ（點）：P90−P10 ≈ 2.5631σ（常態假設）
+    const sigCyclePts = (p10Pts !== null && p90Pts !== null) ? (p90Pts - p10Pts) / 2.5631 : refPrice * 0.011 * Math.sqrt(H);
+    const costPts = refPrice * 0.0002 + 2;                  // 往返成本（點）
+    const r5 = (x: number) => Math.round(x / 5) * 5;        // 取整到 5 點
+    const anchor = pos?.entry ?? Math.round(refPrice);      // 有持倉以進場均價為基準，空手以現價為基準
+    const dirLevel: 'long' | 'short' = pos ? pos.dir : (totalScore >= 4 ? 'long' : totalScore <= -4 ? 'short' : (totalScore >= 0 ? 'long' : 'short'));
+    const mk = (distRaw: number, kind: 'sl' | 'tp', name: string, idx: number) => {
+      const dist = Math.max(r5(distRaw), kind === 'sl' ? r5(costPts * 3) : r5(costPts * 4));
+      const price = dirLevel === 'long' ? Math.round(anchor + (kind === 'tp' ? dist : -dist)) : Math.round(anchor + (kind === 'tp' ? -dist : dist));
+      const twd = dist * m.mult * qty;
+      return { name, kind, idx, dist, price, twd, capPct: +(twd / capital * 100).toFixed(1) };
+    };
+    const sl = [
+      mk(sigCyclePts * 0.7, 'sl', '停損一（標準・約0.7倍週期σ）', 1),
+      mk(sigCyclePts * 1.1, 'sl', '停損二（寬停・約1.1倍週期σ，震盪盤用）', 2),
+    ];
+    const tp = [
+      mk(sigCyclePts * 1.0, 'tp', '停利一（減碼 1/3～1/2・約1.0倍週期σ）', 1),
+      mk(sigCyclePts * 1.6, 'tp', '停利二（主要目標・約1.6倍週期σ）', 2),
+      mk(sigCyclePts * 2.4, 'tp', '停利三（延伸目標・約2.4倍週期σ，尾倉）', 3),
+    ];
+    return {
+      item: itemKey, itemName: m.name, mult: m.mult, qty,
+      margin: m.init, capital, capitalNote: `3 倍保證金 × ${qty} 口 = NT$${capital.toLocaleString()}（原始保證金 NT${m.init.toLocaleString()}/口，期交所 2026-08-12 公告）`,
+      callBufferPts: Math.round(callBuffer),
+      anchor, anchorNote: pos ? `以你的進場均價 ${anchor.toLocaleString()} 為基準（${pos.item} ${pos.dir === 'long' ? '多' : '空'} ${qty} 張）` : `你目前空手：以現價 ${anchor.toLocaleString()} 為假想進場基準，方向依引擎評分（${totalScore > 0 ? '+' : ''}${totalScore} 分 → ${dirLevel === 'long' ? '做多' : '做空'}視角）`,
+      dir: dirLevel, sigCyclePts: Math.round(sigCyclePts), costPts: +costPts.toFixed(1),
+      sl, tp,
+      rr: +(tp[0].dist / sl[0].dist).toFixed(2),
+      rule: '只給週期內波段建議（至 ' + cycle.endLabel + '），不給長線建議；停損距離 ≥ 3 倍往返成本，停利分檔：TP1 減碼鎖利、TP2 主要目標、TP3 尾倉延伸。',
+    };
+  })();
+
+  // ════════ 综合建議（含時段偵測 + 週期止盈止損點位）════════
   const verdict = buildVerdict({
     totalScore, maxScore, scoreRatio, band, up5, down5, exp5, d1Up,
     refPrice, spotNow, frontLast, basisPct, streak3Down, streak3Up,
@@ -844,6 +1004,8 @@ export async function GET(req: Request) {
     p10Pts, p50Pts, p90Pts, factorCount: factors.length,
     intraday,
     pos,
+    cycle,
+    levels,
   });
 
   const sqDate = sqDateStr || nextSQDate(nowCST);
@@ -905,10 +1067,10 @@ export async function GET(req: Request) {
 
   const narrative: string[] = [];
   const ref0 = frontLast ?? spot ?? 0;
-  narrative.push(`【評估方法】引擎串接 ${dataReady.length} 項即時數據，經 ${factors.length} 個因子評分（每因子 +3~−3，美股即時風向權重×2，滿分 ±${maxScore}），得到綜合分數 ${totalScore > 0 ? '+' : ''}${totalScore}（${band.label}）；再用近1年 ${closes.length} 個交易日的真實日報酬做 10,000 次蒙地卡羅抽樣，並疊加因子分數調整漂移項（${(driftAdj * 100).toFixed(2)}%/日），模擬未來 5 日路徑分布。${isSQWeek && sqStats ? `【SQ週提示】本週為結算週：近5年 ${sqStats.n} 次結算日±1日波動 ${sqStats.stdPct.toFixed(2)}%（平日僅 1.1%），上漲機率 ${(sqStats.upProb * 100).toFixed(0)}%，結算週建議減低槓桿。` : ''}`);
+  narrative.push(`【評估方法】引擎串接 ${dataReady.length} 項即時數據，經 ${factors.length} 個因子評分（每因子 +3~−3，美股即時風向權重×2，滿分 ±${maxScore}），得到綜合分數 ${totalScore > 0 ? '+' : ''}${totalScore}（${band.label}）；再用近1年 ${closes.length} 個交易日的真實日報酬做 10,000 次蒙地卡羅抽樣，並疊加因子分數調整漂移項（${(driftAdj * 100).toFixed(2)}%/日），模擬未來 ${H} 個交易日（至 ${cycle.endLabel}）路徑分布。${isSQWeek && sqStats ? `【SQ週提示】本週為結算週：近5年 ${sqStats.n} 次結算日±1日波動 ${sqStats.stdPct.toFixed(2)}%（平日僅 1.1%），上漲機率 ${(sqStats.upProb * 100).toFixed(0)}%，結算週建議減低槓桿。` : ''}`);
   narrative.push(`【多頭依據】${factors.filter(f => f.score > 0).map(f => `${f.label} +${f.score}`).join('、') || '目前沒有正面因子'}`);
   narrative.push(`【空頭依據】${factors.filter(f => f.score < 0).map(f => `${f.label} ${f.score}`).join('、') || '目前沒有負面因子'}`);
-  narrative.push(`【模擬結論】5 日上漲機率 ${(up5 * 100).toFixed(0)}%、下跌 ${(down5 * 100).toFixed(0)}%，期望報酬 ${(exp5 * 100 >= 0 ? '+' : '') + (exp5 * 100).toFixed(2)}%；80% 信賴區間落在 ${p10Pts?.toLocaleString()} ~ ${p90Pts?.toLocaleString()} 點（現價 ${Math.round(ref0).toLocaleString()}）。下個交易日（${fmtDate(ntd)}）上漲機率 ${(d1Up * 100).toFixed(0)}%。`);
+  narrative.push(`【模擬結論】評估週期（至 ${cycle.endLabel}）上漲機率 ${(up5 * 100).toFixed(0)}%、下跌 ${(down5 * 100).toFixed(0)}%，期望報酬 ${(exp5 * 100 >= 0 ? '+' : '') + (exp5 * 100).toFixed(2)}%；80% 信賴區間落在 ${p10Pts?.toLocaleString()} ~ ${p90Pts?.toLocaleString()} 點（現價 ${Math.round(ref0).toLocaleString()}）。下個交易日（${fmtDate(ntd)}）上漲機率 ${(d1Up * 100).toFixed(0)}%。`);
   if (severeHits.length) narrative.push(`【風險蓋章】偵測到 ${severeHits.length} 則重大負面事件（${[...new Set(severeHits.map(h => h.keyword))].slice(0, 4).join('、')}）。歷史經驗：黑天鵝事件會讓統計模型失效（報酬分布瞬間改變），此時所有機率數字只能當參考，建議以「降低部位」為第一原則，等事件明朗後引擎會自動重新計分。`);
   narrative.push(`【模型限制】① 蒙地卡羅用歷史日報酬抽樣，假設未來分布與過去1年相似——遇到結構性轉折（如升息循環啟動）會失準；② 因子分數對漂移的調整（±0.4%/日）是經驗值非最優估計；③ 原缺口清單 6 項已用替代方案補上 4 項（CDF→2330盤中動量、SQ→5年歷史自算、選擇權→EWT鏈、PTT情緒→關鍵字打分），僅剩「融資維持率」與「夜盤量能」2 項無公開數據源，已分別用融資餘額日變動與美股即時風向因子近似。`);
 
@@ -947,6 +1109,18 @@ export async function GET(req: Request) {
     } : null,
     nsfWatch: { prob: nsfProb, level: nsfLevel, reasons: nsfReasons },
     sqDate,
+    // ════ 2026-11-18 新增：波段評估週期 + 週期統整模擬曲線 + 多組止盈止損點位 + 技術面參數 ════
+    cycle,
+    cycleCurve,
+    levels,
+    tech: {
+      ma20: ma20 !== null ? Math.round(ma20) : null,
+      ma60: ma60 !== null ? Math.round(ma60) : null,
+      ma240: ma240 !== null ? Math.round(ma240) : null,
+      ma240Rising,
+      distMa240Pct: distMa240Pct !== null ? +distMa240Pct.toFixed(2) : null,
+      rsi14: rsi14 !== null ? +rsi14.toFixed(1) : null,
+    },
     verdict,
     assessment: { narrative, dataReady, dataMissing, dataResolved, factorCount: factors.length },
     stats: {
@@ -983,6 +1157,8 @@ function buildVerdict(p: {
   factorCount: number;
   intraday: IntradayState | null;
   pos: { dir: 'long' | 'short'; qty: number; entry: number; mult: number; item: string } | null;
+  cycle: CycleOut;
+  levels: LevelsOut | null;
 }) {
   const s = p.totalScore;
   const dir = s >= 11 ? 'strong-buy' : s >= 4 ? 'buy' : s <= -11 ? 'strong-sell' : s <= -4 ? 'sell' : 'neutral';
@@ -998,17 +1174,27 @@ function buildVerdict(p: {
   const lines: string[] = [];
   const ref = p.refPrice;
 
-  // ════ 動態止盈止損校準（2026-11-17 用戶反饋：固定 ±100 點止損不恰當）════
-  // 固定 ±100 點在高波動盤（如 11/17 日內振幅 1789 點）會被反覆掃損，低波動盤又過寬。
-  // 改為：5日模擬 P10~P90 → σ5 → 日 σ → 當沖停損 ≈ 0.9σ、停利 ≈ 1.5σ、進場緩衝區 ≈ 0.4σ。
-  const sig5 = (p.p90Pts !== null && p.p10Pts !== null) ? (p.p90Pts - p.p10Pts) / 2.5631 : null;
-  const sigDaily = sig5 !== null ? sig5 / Math.sqrt(5) : (ref ? ref * 0.011 : 400);
-  const stopDist = Math.max(60, Math.min(900, Math.round(sigDaily * 0.9)));
-  const tpDist = Math.max(120, Math.min(1500, Math.round(sigDaily * 1.5)));
-  const zoneDist = Math.max(40, Math.min(500, Math.round(sigDaily * 0.4))); // 進場回檔/反彈緩衝區寬度
+  // ════ 動態止盈止損校準（2026-11-18 再修正：以「波段週期 σ」為尺度，不是日內 σ——用戶要求按週期給建議、勿太快進快出）════
+  // 週期 = 現在 → T+2 交易日夜盤收盤（p10~p90 即該週期分布）：σ_cycle = (P90−P10)/2.5631。
+  // 停損 ≈ 0.7σ_cycle（標準）／1.1σ_cycle（寬停）；停利 ≈ 1.0/1.6/2.4σ_cycle 三檔；進場緩衝區 ≈ 0.3σ_cycle。
+  const sigCycle = (p.p90Pts !== null && p.p10Pts !== null) ? (p.p90Pts - p.p10Pts) / 2.5631 : (ref ? ref * 0.016 : 600);
+  const sigDaily = sigCycle / Math.sqrt(p.cycle.days || 2);
+  const stopDist = Math.max(60, Math.min(1800, Math.round(sigCycle * 0.7)));
+  const tpDist = Math.max(120, Math.min(3000, Math.round(sigCycle * 1.6)));
+  const zoneDist = Math.max(40, Math.min(800, Math.round(sigCycle * 0.3))); // 進場回檔/反彈緩衝區寬度
   // 往返成本（點）：期貨交易稅 ≈ 0.0001×價格×2邊 + 手續費（TXF 原價每張每邊 NT$200 ≈ 2 點/張往返；MXF 依券商折扣）
   const costPts = ref ? ref * 0.0002 + 2 : 10;
-  lines.push(`【止盈止損校準】依模擬波動率（日 σ ≈ ${Math.round(sigDaily)} 點）：當沖停損 ±${stopDist} 點、停利目標 ±${tpDist} 點（盈虧比 ≈ 1:${(tpDist / stopDist).toFixed(1)}）。舊版固定 ±100 點止損${stopDist >= 180 ? `在當前波動下過窄——日內常態波動 ±${Math.round(sigDaily)} 點，±100 點會在方向還沒走出來前就被洗掉（11/17 日內振幅高達 1789 點就是例子），現改按波動率校準並搭配日內結構（低點/高點 ±30 點緩衝）設停損` : stopDist <= 90 ? `在當前低波動下過寬，本金曝險太大，現收緊為 ±${stopDist} 點` : `與當前波動大致相符，但仍改為動態：隨波動率每日自動調整，不再寫死`}。往返成本約 ${costPts.toFixed(0)} 點/張（交易稅 ≈ ${(ref ? ref * 0.0002 : 8).toFixed(1)} 點＋手續費 ≈ 2 點），停損距離必須 > 3 倍成本（≥ ${Math.round(costPts * 3)} 點）才值得進場。`);
+  lines.push(`【評估週期】${p.cycle.note}。本次評估至 ${p.cycle.endLabel}。以下全部是「週期內波段建議」，不是當沖快進快出、也不是長線建議。`);
+  lines.push(`【止盈止損校準】週期波動 σ ≈ ${Math.round(sigCycle)} 點（日 σ ≈ ${Math.round(sigDaily)} 點）：波段停損 ${stopDist} 點（0.7σ）、主要停利 ${tpDist} 點（1.6σ），盈虧比 ≈ 1:${(tpDist / stopDist).toFixed(1)}。舊版固定 ±100 點止損屬日內尺度，在 ${Math.round(sigCycle)} 點的週期波動下必然被洗掉（11/17 日內振幅 1789 點就是例子）——已改為週期波動率校準並搭配日內結構（低點/高點 ±30 點緩衝）。往返成本約 ${costPts.toFixed(0)} 點/張，停損距離必須 > 3 倍成本（≥ ${Math.round(costPts * 3)} 點）才值得進場。`);
+  // ── 多組建議止盈/止損點位（含 3 倍保證金資金測算；隨「我的未平倉」輸入連動）──
+  if (p.levels) {
+    const L = p.levels;
+    const fmtT = (n: number) => (n >= 0 ? '+' : '−') + 'NT$' + Math.abs(Math.round(n)).toLocaleString('zh-TW');
+    lines.push(`【建議止盈止損點位】${L.anchorNote}。資金規則：${L.capitalNote}。`);
+    for (const t of L.tp) lines.push(`　🎯 ${t.name}：${t.price.toLocaleString()} 點（距基準 ${t.dist} 點）→ 獲利 ${fmtT(t.twd)}（佔投入資金 ${t.capPct}%）`);
+    for (const s2 of L.sl) lines.push(`　🛑 ${s2.name}：${s2.price.toLocaleString()} 點（距基準 ${s2.dist} 點）→ 虧損 ${fmtT(-s2.twd)}（佔投入資金 ${s2.capPct}%）`);
+    lines.push(`　盈虧比（TP1/SL1）≈ 1:${L.rr}；追繳緩衝：3 倍資金下行情要逆向約 ${L.callBufferPts.toLocaleString()} 點才會觸及維持保證金——上述停損都遠在追繳線之內，風險可控。${L.rule}`);
+  }
 
   // ════ 我的持倉（2026-11-17 用戶要求：最上方先輸入買/賣、張數、均價，再給數據與建議）════
   if (p.pos && p.frontLast) {
@@ -1036,7 +1222,7 @@ function buildVerdict(p: {
       } else if (engineShort) {
         advice = `你的多單與引擎總方向「相反」（${s} 分偏空）：勿攤平、勿凹單。${inProfit ? `① 目前還有 +${pnlPts.toFixed(0)} 點獲利，先減碼一半鎖利；` : `① 目前已虧 ${Math.abs(pnlPts).toFixed(0)} 點，${mid >= p.frontLast ? `反彈到日內中點 ${mid.toLocaleString()} 附近先減碼一半止血` : `現價已在日內中點（${mid.toLocaleString()}）上方，逢反彈無力先減碼一半止血`}；`}② 剩餘部位停損 ${stop.toLocaleString()} 點（日內低點−30 緩衝／1×波動距離取較緊者），跌破無條件出場；③ 總分翻正到 +4 以上才考慮重新做多。`;
       } else if (engineLong) {
-        advice = `你的多單與引擎方向「一致」（+${s} 分偏多），可續抱：${inProfit ? `已獲利 +${pnlPts.toFixed(0)} 點，停損上移到 ${Math.max(stop, Math.round(ps.entry + 20)).toLocaleString()} 點（保本＋鎖利），` : `保護性停損設 ${stop.toLocaleString()} 點，`}跌破才無條件出場。停利參考：+${tpDist} 點（約 ${Math.round(ps.entry + tpDist).toLocaleString()}）先減 1/3～1/2，剩餘用 5 日中位 ${p.p50Pts ? p.p50Pts.toLocaleString() : '--'} 點做目標、移動停損跟著日內低點上移。`;
+        advice = `你的多單與引擎方向「一致」（+${s} 分偏多），可續抱：${inProfit ? `已獲利 +${pnlPts.toFixed(0)} 點，停損上移到 ${Math.max(stop, Math.round(ps.entry + 20)).toLocaleString()} 點（保本＋鎖利），` : `保護性停損設 ${stop.toLocaleString()} 點，`}跌破才無條件出場。停利參考：+${tpDist} 點（約 ${Math.round(ps.entry + tpDist).toLocaleString()}）先減 1/3～1/2，剩餘用週期中位 ${p.p50Pts ? p.p50Pts.toLocaleString() : '--'} 點做目標、移動停損跟著日內低點上移。`;
       } else {
         advice = `引擎目前「中性」（${s} 分），多單可抱但勿加碼：停損 ${stop.toLocaleString()} 點跌破就出場；等總分 ≥ +4（轉多）再考慮加碼，若轉 ≤ −4（轉空）先減碼一半。`;
       }
@@ -1051,7 +1237,7 @@ function buildVerdict(p: {
       } else if (engineLong) {
         advice = `你的空單與引擎總方向「相反」（+${s} 分偏多）：勿凹單、勿加空。${inProfit ? `① 目前還有 +${pnlPts.toFixed(0)} 點獲利，先減碼一半鎖利；` : `① 目前已虧 ${Math.abs(pnlPts).toFixed(0)} 點，${mid <= p.frontLast ? `回檔到日內中點 ${mid.toLocaleString()} 附近先減碼一半止血` : `現價已在日內中點（${mid.toLocaleString()}）下方，逢反彈無力先減碼一半止血`}；`}② 剩餘部位停損 ${stop.toLocaleString()} 點（日內高點＋30 緩衝／1×波動距離取較緊者），漲破無條件回補；③ 總分翻負到 −4 以下才考慮重新做空。`;
       } else if (engineShort) {
-        advice = `你的空單與引擎方向「一致」（${s} 分偏空），可續抱：${inProfit ? `已獲利 +${pnlPts.toFixed(0)} 點，停損下移到 ${Math.min(stop, Math.round(ps.entry - 20)).toLocaleString()} 點（保本＋鎖利），` : `保護性停損設 ${stop.toLocaleString()} 點，`}漲破才無條件回補。停利參考：−${tpDist} 點（約 ${Math.round(ps.entry - tpDist).toLocaleString()}）先減 1/3～1/2，剩餘用 5 日悲觀 ${p.p10Pts ? p.p10Pts.toLocaleString() : '--'} 點做目標、移動停損跟著日內高點下移。`;
+        advice = `你的空單與引擎方向「一致」（${s} 分偏空），可續抱：${inProfit ? `已獲利 +${pnlPts.toFixed(0)} 點，停損下移到 ${Math.min(stop, Math.round(ps.entry - 20)).toLocaleString()} 點（保本＋鎖利），` : `保護性停損設 ${stop.toLocaleString()} 點，`}漲破才無條件回補。停利參考：−${tpDist} 點（約 ${Math.round(ps.entry - tpDist).toLocaleString()}）先減 1/3～1/2，剩餘用週期悲觀 ${p.p10Pts ? p.p10Pts.toLocaleString() : '--'} 點做目標、移動停損跟著日內高點下移。`;
       } else {
         advice = `引擎目前「中性」（${s} 分），空單可抱但勿加碼：停損 ${stop.toLocaleString()} 點漲破就出場；等總分 ≤ −4（轉空）再考慮加碼，若轉 ≥ +4（轉多）先減碼一半。`;
       }
@@ -1111,11 +1297,11 @@ function buildVerdict(p: {
   // ── 下一交易日機率（修正：不叫「明日」，用實際交易日 + 日期）──
   const dayLabel = p.ph.nextIsToday ? '今日' : `下個交易日 ${fmtDate(p.ph.ntd)}`;
   lines.push(`【${dayLabel}機率】上漲 ${(p.d1Up * 100).toFixed(0)}% ／ 下跌 ${(100 - p.d1Up * 100).toFixed(0)}%${p.ph.isWeekend ? '（週末休市，此為下個交易日預估）' : ''}`);
-  lines.push(`【未來5日】上漲機率 ${(p.up5 * 100).toFixed(0)}% ／ 下跌機率 ${(p.down5 * 100).toFixed(0)}%｜期望報酬 ${p.exp5 >= 0 ? '+' : ''}${p.exp5.toFixed(2)}%`);
+  lines.push(`【未來5日】上漲機率 ${(p.up5 * 100).toFixed(0)}% ／ 下跌機率 ${(p.down5 * 100).toFixed(0)}%｜期望報酬 ${p.exp5 >= 0 ? '+' : ''}${p.exp5.toFixed(2)}%`.replace('【未來5日】', `【評估週期（至 ${p.cycle.lastDayLabel} 夜盤收盤）】`));
 
   // ── 點數區間（P10~P90 → 具體點位）──
   if (ref && p.p10Pts && p.p50Pts && p.p90Pts) {
-    lines.push(`【5日點數區間】參考近月 ${Math.round(ref).toLocaleString()} 點：悲觀 ${p.p10Pts.toLocaleString()} ／ 中位 ${p.p50Pts.toLocaleString()} ／ 樂觀 ${p.p90Pts.toLocaleString()} 點。`);
+    lines.push(`【週期點數區間】參考近月 ${Math.round(ref).toLocaleString()} 點，至 ${p.cycle.lastDayLabel} 夜盤收盤：悲觀(P10) ${p.p10Pts.toLocaleString()} ／ 中位(P50) ${p.p50Pts.toLocaleString()} ／ 樂觀(P90) ${p.p90Pts.toLocaleString()} 點。`);
   }
 
   // ── 當下買賣點（動態波動率區間 + 日內結構停損 + 時段偵測；已棄用固定 ±100 點）──
@@ -1127,9 +1313,9 @@ function buildVerdict(p: {
     const stopLong = Math.round(p.todayLow ? Math.max(Math.min(p.todayLow, buyLow) - 30, refR - stopDist) : refR - stopDist);
     const stopShort = Math.round(p.todayHigh ? Math.min(Math.max(p.todayHigh, sellHigh) + 30, refR + stopDist) : refR + stopDist);
     if (dir === 'buy' || dir === 'strong-buy') {
-      lines.push(`【怎麼買】在 ${buyLow.toLocaleString()} ~ ${buyHigh.toLocaleString()} 點之間分批買進（第一筆 ≤ 預定部位 1/3，不要一次全下）。跌破 ${stopLong.toLocaleString()} 點（日內低點−30 緩衝／−${stopDist} 點波動距離取較緊者）代表看錯方向，賣掉認賠，虧約 ${(refR - stopLong).toLocaleString()} 點。停利：+${tpDist} 點（約 ${Math.round(refR + tpDist).toLocaleString()}）先減碼，強勢再留尾倉看 5 日樂觀 ${p.p90Pts ? p.p90Pts.toLocaleString() : '--'} 點。`);
+      lines.push(`【怎麼買】在 ${buyLow.toLocaleString()} ~ ${buyHigh.toLocaleString()} 點之間分批買進（第一筆 ≤ 預定部位 1/3，不要一次全下）。跌破 ${stopLong.toLocaleString()} 點（日內低點−30 緩衝／−${stopDist} 點波動距離取較緊者）代表看錯方向，賣掉認賠，虧約 ${(refR - stopLong).toLocaleString()} 點。停利：+${tpDist} 點（約 ${Math.round(refR + tpDist).toLocaleString()}）先減碼，強勢再留尾倉看週期樂觀(P90) ${p.p90Pts ? p.p90Pts.toLocaleString() : '--'} 點。`);
     } else if (dir === 'sell' || dir === 'strong-sell') {
-      lines.push(`【怎麼賣】價格反彈到 ${sellLow.toLocaleString()} ~ ${sellHigh.toLocaleString()} 點、漲不上去的時候賣出（放空或出脫手中多單）。漲破 ${stopShort.toLocaleString()} 點（日內高點＋30 緩衝／+${stopDist} 點波動距離取較緊者）代表看錯方向，買回認賠，虧約 ${(stopShort - refR).toLocaleString()} 點。停利：−${tpDist} 點（約 ${Math.round(refR - tpDist).toLocaleString()}）先減碼，弱勢再留尾倉看 5 日悲觀 ${p.p10Pts ? p.p10Pts.toLocaleString() : '--'} 點。`);
+      lines.push(`【怎麼賣】價格反彈到 ${sellLow.toLocaleString()} ~ ${sellHigh.toLocaleString()} 點、漲不上去的時候賣出（放空或出脫手中多單）。漲破 ${stopShort.toLocaleString()} 點（日內高點＋30 緩衝／+${stopDist} 點波動距離取較緊者）代表看錯方向，買回認賠，虧約 ${(stopShort - refR).toLocaleString()} 點。停利：−${tpDist} 點（約 ${Math.round(refR - tpDist).toLocaleString()}）先減碼，弱勢再留尾倉看週期悲觀(P10) ${p.p10Pts ? p.p10Pts.toLocaleString() : '--'} 點。`);
     } else {
       lines.push(`【怎麼操作】現在不要追。只有兩種情況才動手：① 價格跌到 ${buyLow.toLocaleString()} ~ ${buyHigh.toLocaleString()} 點且跌不動 → 可以買，跌破 ${stopLong.toLocaleString()} 點認賠；② 價格漲到 ${sellLow.toLocaleString()} ~ ${sellHigh.toLocaleString()} 點漲不動 → 可以賣，漲破 ${stopShort.toLocaleString()} 點認賠。價格在這兩個區間中間 = 什麼都不做。`);
     }
