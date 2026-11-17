@@ -9,7 +9,7 @@
 // 【盤中正在發生】敘事 + intraday 因子分數參與綜合評分。
 // ════════════════════════════════════════════════════════════
 
-const BIN = 'https://extendsclass.com/api/json-storage/bin/dfdfebb';
+const BIN = 'https://extendsclass.com/api/json-storage/bin/fecaafd';
 
 export interface TapePoint { t: string; p: number; v: number | null }
 interface TapeData { points: TapePoint[] }
