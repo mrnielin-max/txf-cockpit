@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { fetchMisQuoteList, MisQuote } from '@/lib/taifexMis';
+import { appendTapePoint, analyzeTape, type IntradayState } from '@/lib/tapeStore';
 
 export const revalidate = 0;
 export const dynamic = 'force-dynamic';
@@ -522,6 +523,48 @@ export async function GET() {
   const ntd = ph.ntd;
   const nextWd = Math.min(Math.max(ntd.getUTCDay() - 1, 0), 4); // 0=Mon..4=Fri
 
+  // ════════ 盤中 tape 記錄 + 態勢分析引擎 ════════
+  // 教訓（2026-11-17）：日盤 40001 → V轉 41832 → 回檔 41127 劇烈上下洗刷時，
+  // 所有因子都是隔夜/日級資料，建議凍在昨晚「作空」結論，沒有給「目前正發生什麼狀況」。
+  // 解法：前端每 20s 輪詢本 API → 每分鐘把 TXF 近月現價記到雲端 tape，
+  // 滾動計算區間位置/15分30分動能/V轉/洗刷偵測 → 產生即時敘事 + intraday 因子（±3）參與評分。
+  let frontOpen: number | null = null, frontHigh: number | null = null, frontLow: number | null = null;
+  try {
+    for (const q of txfQuotes) {
+      if (/^TXF[A-Z]\d-[MF]$/.test(q.SymbolID || '') && num(q.CLastPrice) !== null) {
+        frontOpen = num(q.COpenPrice); frontHigh = num(q.CHighPrice); frontLow = num(q.CLowPrice);
+        break;
+      }
+    }
+  } catch { /* ignore */ }
+  let intraday: IntradayState | null = null;
+  try {
+    const tape = await appendTapePoint(frontLast, frontVol);
+    intraday = analyzeTape(tape, ph.phase, frontLast, frontLow, frontHigh);
+  } catch { /* tape 失敗降級到 MIS 快照 */ }
+  if (!intraday && (ph.phase === 'day' || ph.phase === 'night' || ph.phase === 'dayclose')
+      && frontLast !== null && frontHigh !== null && frontLow !== null && frontHigh > frontLow) {
+    // 降級：無 tape 點時用 MIS 官方開高低收快照（開盤前半小時 tape 點數不足的過渡期）
+    const rangePosPct = ((frontLast - frontLow) / (frontHigh - frontLow)) * 100;
+    const rangePct = ((frontHigh - frontLow) / frontLow) * 100;
+    const chgOpen = frontOpen ? ((frontLast / frontOpen) - 1) * 100 : 0;
+    const score = rangePosPct > 75 ? 2 : rangePosPct < 25 ? -2 : chgOpen > 0.4 ? 1 : chgOpen < -0.4 ? -1 : 0;
+    const opinion = score >= 2
+      ? '現價貼近日內高點、日內結構偏強：空單勿追低，既有空單上移停損；等回測區間中點不破再考慮承接多單。'
+      : score <= -2
+        ? '現價貼近日內低點、日內結構偏弱：多單勿攤平，反彈到區間中點無力可減碼/試空；跌破日低勿追，等反彈再空。'
+        : '日內尚無明確方向（tape 分鐘記錄累積中）：在區間中軸附近兩邊都不划算，等 15/30 分鐘動能與區間位置明朗再行動。';
+    intraday = {
+      n: 0, last: frontLast, low: frontLow, high: frontHigh, lowTime: 'MIS', highTime: 'MIS',
+      rangePct, rangePosPct, mom15: null, mom30: null,
+      pattern: score >= 2 ? 'trend-up' : score <= -2 ? 'trend-down' : 'range',
+      patternText: `MIS 快照：現價 ${frontLast.toFixed(0)} 位於日內區間 ${frontLow.toFixed(0)}–${frontHigh.toFixed(0)}（振幅 ${rangePct.toFixed(1)}%）的 ${rangePosPct.toFixed(0)}% 位置${frontOpen ? `，開盤至今 ${chgOpen >= 0 ? '+' : ''}${chgOpen.toFixed(2)}%` : ''}`,
+      score,
+      text: `現價 ${frontLast.toFixed(0)}｜日內區間 ${frontLow.toFixed(0)}–${frontHigh.toFixed(0)}（振幅 ${rangePct.toFixed(1)}%）｜現價位置 ${rangePosPct.toFixed(0)}%｜tape 分鐘記錄累積中，15/30分動能稍後生效`,
+      opinion,
+    };
+  }
+
   // ════════ 因子評分 ════════
   const factors: Factor[] = [];
   const add = (key: string, label: string, score: number, detail: string) => factors.push({ key, label, score, detail });
@@ -637,6 +680,11 @@ export async function GET() {
     const volTxt = tsmVolRatio !== null ? `，尾盤量能為全日均量 ${tsmVolRatio.toFixed(1)} 倍` : '';
     add('tsmlive', '台積電盤中動量（CDF代理）', s, `2330 盤中最後30分鐘 ${tsm30mPct >= 0 ? '+' : ''}${tsm30mPct.toFixed(2)}%${volTxt} → ${s >= 1 ? '大戶尾盤積極買進，領先訊號偏多' : s <= -1 ? '大戶尾盤出貨，領先訊號偏空' : '尾盤持平'}（台積電期貨 CDF 無公開報價，以現股盤中動量+量能代理「大戶提前轉彎」訊號）`);
   }
+  // F11h2 盤中態勢引擎（tape 分鐘記錄）—— 教訓 2026-11-17：日盤 40001→V轉41832→回檔 41127 劇烈洗刷時，
+  // 建議仍凍在隔夜空頭結論，沒有「目前正發生什麼狀況」的即時意見。此因子讓盤中實際走勢直接參與評分。
+  if (intraday) {
+    add('intraday', '盤中態勢引擎（即時）', intraday.score, intraday.text);
+  }
   // F11i 選擇權 Put/Call 比 + 最大痛點（EWT 台股ETF選擇權，替代 TAIFEX 選擇權日報）
   if (ewtOpt?.pcr !== null && ewtOpt?.pcr !== undefined) {
     const pcr = ewtOpt.pcr;
@@ -706,7 +754,7 @@ export async function GET() {
   else add('news', '重大事件警示', 0, `近3日無重大黑天鵝事件命中`);
 
   const totalScore = factors.reduce((a, f) => a + f.score, 0);
-  const maxScore = 39; // 因子加總上限（uslive ±6 + tsmlive/pcr/sq/ptt/social 各 ±2 + nsf +1 後）
+  const maxScore = 42; // 因子加總上限（uslive ±6 + intraday ±3 + tsmlive/pcr/sq/ptt/social 各 ±2 + nsf +1 後）
   const scoreRatio = totalScore / maxScore;
 
   // 分數帶對應
@@ -784,6 +832,7 @@ export async function GET() {
     refPrice, spotNow, frontLast, basisPct, streak3Down, streak3Up,
     lowForecast, nextWd, todayLow, todayHigh, ph, newsAlerts,
     p10Pts, p50Pts, p90Pts, factorCount: factors.length,
+    intraday,
   });
 
   const sqDate = sqDateStr || nextSQDate(nowCST);
@@ -827,6 +876,9 @@ export async function GET() {
   push('PTT散戶情緒淨值', pttScore, v => `${v > 0 ? '+' : ''}${v.toFixed(0)}（正${pttPos}/負${pttNeg}，${pttCount}篇）`);
   push('全平台社群情緒淨值', socialScore, v => `${v > 0 ? '+' : ''}${v.toFixed(0)}（正${socPos}/負${socNeg}，${socSitesHit}平台${socCount}篇）`);
   push('國安基金入場機率（模型推估）', nsfProb, v => `${v.toFixed(0)}% · ${nsfLevel}${nsfReasons.length ? '｜' + nsfReasons[0] : ''}`);
+  if (intraday) {
+    dataReady.push({ name: '盤中態勢引擎（tape 分鐘記錄）', value: `${intraday.pattern}｜現價 ${intraday.last.toFixed(0)} 在區間 ${intraday.rangePosPct.toFixed(0)}% 位置｜15分動能 ${intraday.mom15 === null ? '--' : (intraday.mom15 >= 0 ? '+' : '') + intraday.mom15.toFixed(2) + '%'}｜tape ${intraday.n} 點` });
+  }
 
   const dataMissing = [
     { name: '融資維持率（整戶）', why: 'TWSE 只公布餘額，維持率僅券商公會/集保內部統計，無任何公開 API（已試 TDCC、SFI 均無）', impact: '維持率 <200% 時斷頭賣壓會造成無差別殺盤（目前以融資餘額日變動 ±50 億近似偵測散戶進退場）', severity: '高' },
@@ -874,6 +926,14 @@ export async function GET() {
       rangeLowPts: p10Pts, rangeHighPts: p90Pts,
     },
     lowForecast,
+    intraday: intraday ? {
+      last: intraday.last, low: intraday.low, high: intraday.high,
+      lowTime: intraday.lowTime, highTime: intraday.highTime,
+      rangePct: +intraday.rangePct.toFixed(2), rangePosPct: +intraday.rangePosPct.toFixed(1),
+      mom15: intraday.mom15, mom30: intraday.mom30,
+      pattern: intraday.pattern, score: intraday.score, n: intraday.n,
+      text: intraday.text, opinion: intraday.opinion,
+    } : null,
     nsfWatch: { prob: nsfProb, level: nsfLevel, reasons: nsfReasons },
     sqDate,
     verdict,
@@ -910,6 +970,7 @@ function buildVerdict(p: {
   ph: { phase: Phase; label: string; isWeekend: boolean; dow: number; hm: string; nextIsToday: boolean; ntd: Date };
   newsAlerts: NewsAlert[]; p10Pts: number | null; p50Pts: number | null; p90Pts: number | null;
   factorCount: number;
+  intraday: IntradayState | null;
 }) {
   const s = p.totalScore;
   const dir = s >= 11 ? 'strong-buy' : s >= 4 ? 'buy' : s <= -11 ? 'strong-sell' : s <= -4 ? 'sell' : 'neutral';
@@ -933,6 +994,26 @@ function buildVerdict(p: {
     lines.push(`【一句話結論】現在「建議賣」（做空或不要買）。價格漲到 ${ref ? Math.round(ref).toLocaleString() : '--'} ~ ${ref ? (Math.round(ref) + R).toLocaleString() : '--'} 點之間賣不出力就是賣點；漲破 ${ref ? (Math.round(ref) + R + 30).toLocaleString() : '--'} 點就認賠出場。`);
   } else {
     lines.push(`【一句話結論】現在「不建議買也不建議賣」，觀望等機會。等價格跌到 ${ref ? (Math.round(ref) - R).toLocaleString() : '--'} 點附近才可以考慮買，等價格漲到 ${ref ? (Math.round(ref) + R).toLocaleString() : '--'} 點附近才可以考慮賣，現在這個位置兩邊都不划算。`);
+  }
+
+  // ── 盤中現況（2026-11-17 教訓核心：上下洗刷時必須給「目前正發生什麼狀況」+ 當下意見）──
+  if (p.intraday) {
+    const id = p.intraday;
+    lines.push(`【盤中正在發生】${id.text}`);
+    lines.push(`【盤中即時意見】${id.opinion}`);
+    const sEx = p.totalScore - id.score; // 排除盤中因子的隔夜/日級分數
+    const overnightDir = sEx >= 4 ? '多' : sEx <= -4 ? '空' : '中性';
+    const intraDir = id.score >= 2 ? '多' : id.score <= -2 ? '空' : '中性';
+    const mid = ((id.low + id.high) / 2).toFixed(0);
+    if (overnightDir === '空' && intraDir === '多') {
+      lines.push(`⚠️【矛盾警示】隔夜/日級因子偏空（${sEx} 分），但盤中 tape 已轉多（態勢引擎 +${id.score} 分）。此時以盤中訊號優先：空單勿追低、既有空單減碼；只有價格重新跌回日內區間中點 ${mid} 以下、且近30分鐘動能轉負，才恢復空頭行動。`);
+    } else if (overnightDir === '多' && intraDir === '空') {
+      lines.push(`⚠️【矛盾警示】隔夜/日級因子偏多（+${sEx} 分），但盤中 tape 已轉弱（態勢引擎 ${id.score} 分）。此時以盤中訊號優先：多單勿加碼、逢反彈減碼；只有價格重新站回日內區間中點 ${mid} 之上，才恢復多頭行動。`);
+    } else if (overnightDir === '中性' && intraDir !== '中性') {
+      lines.push(`【盤中主導】隔夜因子中性（${sEx} 分），目前方向由盤中態勢主導（${intraDir}，${id.score >= 0 ? '+' : ''}${id.score} 分），總建議已即時反映盤中變化。`);
+    } else {
+      lines.push(`【訊號一致性】隔夜因子（${sEx > 0 ? '+' : ''}${sEx} 分，偏${overnightDir}）與盤中態勢（${id.score >= 0 ? '+' : ''}${id.score} 分，偏${intraDir}）方向${overnightDir === intraDir ? '一致，結論信心較高' : '未衝突，綜合計分中'}。`);
+    }
   }
 
   // ── 分數說明 ──
