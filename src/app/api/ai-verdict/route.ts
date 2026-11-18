@@ -1071,6 +1071,13 @@ export async function GET(req: Request) {
   narrative.push(`【多頭依據】${factors.filter(f => f.score > 0).map(f => `${f.label} +${f.score}`).join('、') || '目前沒有正面因子'}`);
   narrative.push(`【空頭依據】${factors.filter(f => f.score < 0).map(f => `${f.label} ${f.score}`).join('、') || '目前沒有負面因子'}`);
   narrative.push(`【模擬結論】評估週期（至 ${cycle.endLabel}）上漲機率 ${(up5 * 100).toFixed(0)}%、下跌 ${(down5 * 100).toFixed(0)}%，期望報酬 ${(exp5 * 100 >= 0 ? '+' : '') + (exp5 * 100).toFixed(2)}%；80% 信賴區間落在 ${p10Pts?.toLocaleString()} ~ ${p90Pts?.toLocaleString()} 點（現價 ${Math.round(ref0).toLocaleString()}）。下個交易日（${fmtDate(ntd)}）上漲機率 ${(d1Up * 100).toFixed(0)}%。`);
+  if (pos && p10Pts !== null && p50Pts !== null && p90Pts !== null) {
+    const sgn = pos.dir === 'long' ? 1 : -1;
+    const pnlAt = (pt: number) => Math.round((pt - pos.entry) * sgn * pos.qty * pos.mult);
+    const twd = (v: number) => (v >= 0 ? '+' : '−') + 'NT$' + Math.abs(v).toLocaleString();
+    const winProb = sgn > 0 ? up5 : down5;
+    narrative.push(`【模擬結論・你的部位】你的 ${pos.item} ${sgn > 0 ? '多單' : '空單'} ${pos.qty} 張（均價 ${pos.entry.toLocaleString()}）：蒙地卡羅 10,000 次模擬到 ${cycle.endLabel}，你的部位「獲利機率」= ${(winProb * 100).toFixed(0)}%。週期收在三種情境時你的損益：悲觀 P10（${p10Pts.toLocaleString()} 點）→ ${twd(pnlAt(p10Pts))}；中位 P50（${p50Pts.toLocaleString()} 點）→ ${twd(pnlAt(p50Pts))}；樂觀 P90（${p90Pts.toLocaleString()} 點）→ ${twd(pnlAt(p90Pts))}。期望損益 ≈ ${twd(Math.round(ref0 * exp5 * sgn * pos.qty * pos.mult))}。`);
+  }
   if (severeHits.length) narrative.push(`【風險蓋章】偵測到 ${severeHits.length} 則重大負面事件（${[...new Set(severeHits.map(h => h.keyword))].slice(0, 4).join('、')}）。歷史經驗：黑天鵝事件會讓統計模型失效（報酬分布瞬間改變），此時所有機率數字只能當參考，建議以「降低部位」為第一原則，等事件明朗後引擎會自動重新計分。`);
   narrative.push(`【模型限制】① 蒙地卡羅用歷史日報酬抽樣，假設未來分布與過去1年相似——遇到結構性轉折（如升息循環啟動）會失準；② 因子分數對漂移的調整（±0.4%/日）是經驗值非最優估計；③ 原缺口清單 6 項已用替代方案補上 4 項（CDF→2330盤中動量、SQ→5年歷史自算、選擇權→EWT鏈、PTT情緒→關鍵字打分），僅剩「融資維持率」與「夜盤量能」2 項無公開數據源，已分別用融資餘額日變動與美股即時風向因子近似。`);
 
@@ -1262,12 +1269,13 @@ function buildVerdict(p: {
   // ── 一句話大白話結論（動態距離，已棄用固定 ±100 點）──
   if (ref) {
     const refR0 = Math.round(ref);
+    const posTag = p.pos ? `（注意：你已持有 ${p.pos.item} ${p.pos.dir === 'long' ? '多單' : '空單'} ${p.pos.qty} 張，以下是「新部位」參考；你現有部位的動作請看上方【持倉操作建議】）` : '';
     if (dir === 'buy' || dir === 'strong-buy') {
-      lines.push(`【一句話結論】現在「建議買」（做多）。買點：回檔到 ${Math.max(0, refR0 - zoneDist).toLocaleString()} ~ ${refR0.toLocaleString()} 點之間分批買；跌破 ${Math.round(refR0 - stopDist).toLocaleString()} 點（−${stopDist} 點，波動率校準）就認賠出場；停利目標 +${tpDist} 點（約 ${Math.round(refR0 + tpDist).toLocaleString()}）。`);
+      lines.push(`【一句話結論】現在「建議買」（做多）。買點：回檔到 ${Math.max(0, refR0 - zoneDist).toLocaleString()} ~ ${refR0.toLocaleString()} 點之間分批買；跌破 ${Math.round(refR0 - stopDist).toLocaleString()} 點（−${stopDist} 點，波動率校準）就認賠出場；停利目標 +${tpDist} 點（約 ${Math.round(refR0 + tpDist).toLocaleString()}）。${posTag}`);
     } else if (dir === 'sell' || dir === 'strong-sell') {
-      lines.push(`【一句話結論】現在「建議賣」（做空或不要買）。賣點：反彈到 ${refR0.toLocaleString()} ~ ${Math.round(refR0 + zoneDist).toLocaleString()} 點之間賣不出力就是賣點；漲破 ${Math.round(refR0 + stopDist).toLocaleString()} 點（+${stopDist} 點，波動率校準）就認賠出場；停利目標 −${tpDist} 點（約 ${Math.round(refR0 - tpDist).toLocaleString()}）。`);
+      lines.push(`【一句話結論】現在「建議賣」（做空或不要買）。賣點：反彈到 ${refR0.toLocaleString()} ~ ${Math.round(refR0 + zoneDist).toLocaleString()} 點之間賣不出力就是賣點；漲破 ${Math.round(refR0 + stopDist).toLocaleString()} 點（+${stopDist} 點，波動率校準）就認賠出場；停利目標 −${tpDist} 點（約 ${Math.round(refR0 - tpDist).toLocaleString()}）。${posTag}`);
     } else {
-      lines.push(`【一句話結論】現在「不建議買也不建議賣」，觀望等機會。等價格跌到 ${Math.max(0, refR0 - zoneDist).toLocaleString()} 點附近才可以考慮買（停損 −${stopDist} 點），等價格漲到 ${Math.round(refR0 + zoneDist).toLocaleString()} 點附近才可以考慮賣（停損 +${stopDist} 點），現在這個位置兩邊都不划算。`);
+      lines.push(`【一句話結論】現在「不建議買也不建議賣」，觀望等機會。等價格跌到 ${Math.max(0, refR0 - zoneDist).toLocaleString()} 點附近才可以考慮買（停損 −${stopDist} 點），等價格漲到 ${Math.round(refR0 + zoneDist).toLocaleString()} 點附近才可以考慮賣（停損 +${stopDist} 點），現在這個位置兩邊都不划算。${posTag}`);
     }
   }
 
@@ -1294,14 +1302,21 @@ function buildVerdict(p: {
   // ── 分數說明 ──
   lines.push(`【綜合分數說明】目前 ${s > 0 ? '+' : ''}${s} 分（滿分 ±${p.maxScore}）。分數 = ${p.factorCount} 個因子加總（美股即時風向權重×2）。帶對應：≥+11 強勢看多、+4~+10 偏多、−3~+3 中性、−4~−10 偏空、≤−11 強勢看空。你現在落在「${p.band.label}」區。`);
 
-  // ── 下一交易日機率（修正：不叫「明日」，用實際交易日 + 日期）──
+  // ── 下一交易日機率（修正：不叫「明日」，用實際交易日 + 日期；有持倉時加上「你的部位」視角）──
   const dayLabel = p.ph.nextIsToday ? '今日' : `下個交易日 ${fmtDate(p.ph.ntd)}`;
-  lines.push(`【${dayLabel}機率】上漲 ${(p.d1Up * 100).toFixed(0)}% ／ 下跌 ${(100 - p.d1Up * 100).toFixed(0)}%${p.ph.isWeekend ? '（週末休市，此為下個交易日預估）' : ''}`);
-  lines.push(`【未來5日】上漲機率 ${(p.up5 * 100).toFixed(0)}% ／ 下跌機率 ${(p.down5 * 100).toFixed(0)}%｜期望報酬 ${p.exp5 >= 0 ? '+' : ''}${p.exp5.toFixed(2)}%`.replace('【未來5日】', `【評估週期（至 ${p.cycle.lastDayLabel} 夜盤收盤）】`));
+  lines.push(`【${dayLabel}機率】上漲 ${(p.d1Up * 100).toFixed(0)}% ／ 下跌 ${(100 - p.d1Up * 100).toFixed(0)}%${p.ph.isWeekend ? '（週末休市，此為下個交易日預估）' : ''}${p.pos ? `｜對你的${p.pos.dir === 'long' ? '多單' : '空單'}：當天獲利機率約 ${((p.pos.dir === 'long' ? p.d1Up : 1 - p.d1Up) * 100).toFixed(0)}%` : ''}`);
+  lines.push(`【未來5日】上漲機率 ${(p.up5 * 100).toFixed(0)}% ／ 下跌機率 ${(p.down5 * 100).toFixed(0)}%｜期望報酬 ${p.exp5 >= 0 ? '+' : ''}${p.exp5.toFixed(2)}%${p.pos ? `｜對你的${p.pos.dir === 'long' ? '多單' : '空單'}：整個評估週期獲利機率約 ${((p.pos.dir === 'long' ? p.up5 : p.down5) * 100).toFixed(0)}%` : ''}`.replace('【未來5日】', `【評估週期（至 ${p.cycle.lastDayLabel} 夜盤收盤）】`));
 
-  // ── 點數區間（P10~P90 → 具體點位）──
+  // ── 點數區間（P10~P90 → 具體點位；有持倉時直接換算成台幣損益）──
   if (ref && p.p10Pts && p.p50Pts && p.p90Pts) {
-    lines.push(`【週期點數區間】參考近月 ${Math.round(ref).toLocaleString()} 點，至 ${p.cycle.lastDayLabel} 夜盤收盤：悲觀(P10) ${p.p10Pts.toLocaleString()} ／ 中位(P50) ${p.p50Pts.toLocaleString()} ／ 樂觀(P90) ${p.p90Pts.toLocaleString()} 點。`);
+    let posTail = '';
+    if (p.pos) {
+      const sgn = p.pos.dir === 'long' ? 1 : -1;
+      const f = (pt: number) => Math.round((pt - p.pos!.entry) * sgn * p.pos!.qty * p.pos!.mult);
+      const twd = (v: number) => (v >= 0 ? '+' : '−') + 'NT$' + Math.abs(v).toLocaleString();
+      posTail = ` 你的部位（${p.pos.item} ${sgn > 0 ? '多' : '空'} ${p.pos.qty} 張・均價 ${p.pos.entry.toLocaleString()}）收在這三個點位的損益：P10 → ${twd(f(p.p10Pts))}、P50 → ${twd(f(p.p50Pts))}、P90 → ${twd(f(p.p90Pts))}。`;
+    }
+    lines.push(`【週期點數區間】參考近月 ${Math.round(ref).toLocaleString()} 點，至 ${p.cycle.lastDayLabel} 夜盤收盤：悲觀(P10) ${p.p10Pts.toLocaleString()} ／ 中位(P50) ${p.p50Pts.toLocaleString()} ／ 樂觀(P90) ${p.p90Pts.toLocaleString()} 點。${posTail}`);
   }
 
   // ── 當下買賣點（動態波動率區間 + 日內結構停損 + 時段偵測；已棄用固定 ±100 點）──
