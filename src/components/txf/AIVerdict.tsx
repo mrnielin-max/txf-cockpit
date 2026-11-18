@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
+import { POS_KEY } from './MyPosition';
 
 // ════════════════════════════════════════════════════════════
 // AI 決策引擎專欄：多因子評分 + 蒙地卡羅模擬 + 當下買賣建議
@@ -79,7 +80,7 @@ export default function AIVerdict() {
     // 我的未平倉（MyPosition 元件存於 localStorage）→ 附給引擎，產出【我的持倉】【持倉操作建議】
     let qs = '';
     try {
-      const p = JSON.parse(localStorage.getItem('txf-my-position') || 'null');
+      const p = JSON.parse(localStorage.getItem(POS_KEY) || 'null');
       if (p && (p.dir === 'long' || p.dir === 'short') && p.qty > 0 && p.entry > 0)
         qs = `?pos=${p.dir}&qty=${p.qty}&entry=${p.entry}&item=${['TXF', 'MXF', 'TMF'].includes(p.item) ? p.item : 'TXF'}`;
     } catch { /* ignore */ }

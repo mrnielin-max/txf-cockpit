@@ -9,7 +9,7 @@ import { useEffect, useState, useCallback } from 'react';
 // AI 決策引擎收到後輸出【我的持倉】【持倉操作建議】。
 // ════════════════════════════════════════════════════════════
 
-export const POS_KEY = '***';
+export const POS_KEY = 'txf-my-position';
 export type PosDir = 'none' | 'long' | 'short';
 export interface MyPos { item: 'TXF' | 'MXF' | 'TMF'; dir: PosDir; qty: number; entry: number | null }
 
@@ -30,9 +30,15 @@ export default function MyPosition() {
   const [chgPct, setChgPct] = useState<number | null>(null);
   const [savedAt, setSavedAt] = useState('');
 
-  // 讀取已存部位
+  // 讀取已存部位（含舊版壞 key 遷移：早期版本曾把資料存在錯誤 key 下）
   useEffect(() => {
     try {
+      const LEGACY_KEY = '*'.repeat(3); // 舊版誤存的 key
+      if (!localStorage.getItem(POS_KEY) && localStorage.getItem(LEGACY_KEY)) {
+        localStorage.setItem(POS_KEY, localStorage.getItem(LEGACY_KEY) || '');
+        localStorage.removeItem(LEGACY_KEY);
+        window.dispatchEvent(new CustomEvent('txf-pos-change'));
+      }
       const p = JSON.parse(localStorage.getItem(POS_KEY) || 'null') as (MyPos & { savedAt?: string }) | null;
       if (p && p.dir) {
         setItem(p.item || 'TXF'); setDir(p.dir);
