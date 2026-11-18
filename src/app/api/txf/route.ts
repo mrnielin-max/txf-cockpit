@@ -173,8 +173,16 @@ export async function GET() {
         ask:       front ? toNum(front.CAskPrice1) : 0,
         bidSize:   front ? toNum(front.CBidSize1) : 0,
         askSize:   front ? toNum(front.CAskSize1) : 0,
-        date:      front?.CDate || '',
-        time:      front?.CTime || '',
+        // -M feed 的近月 CTime 常停在舊值但量價是活的（2026-11-18 夜盤教訓）：
+        // 顯示時間取「front 自身時間戳」與「feed 最新時間戳(fresh)」中較新者，避免頁首顯示過期時間。
+        date:      (() => {
+          const own = `${front?.CDate || ''}${String(front?.CTime || '').padEnd(6, '0')}`;
+          return String(fresh) >= own && String(fresh).length === 14 ? String(fresh).slice(0, 8) : (front?.CDate || '');
+        })(),
+        time:      (() => {
+          const own = `${front?.CDate || ''}${String(front?.CTime || '').padEnd(6, '0')}`;
+          return String(fresh) >= own && String(fresh).length === 14 ? String(fresh).slice(8) : (front?.CTime || '');
+        })(),
       },
       contracts,
       fetchedAt: new Date().toISOString(),

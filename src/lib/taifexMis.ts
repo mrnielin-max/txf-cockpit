@@ -63,30 +63,58 @@ export async function fetchMisQuoteList(
   return { quotes: l0, marketType: '0', fresh: f0 };
 }
 
-// 近月合約挑選：成交量最大，且報價時間戳距最新報價 2 小時內（剔除已到期月份的陳舊報價）。
-// 教訓（2026-11-18）：結算日夜盤，到期月 K6 成交量仍最大但停在 01:40 舊價，被誤選為近月。
+// 近月合約挑選（2026-11-18 結算日夜盤教訓 v2）：
+// 舊邏輯「報價時間戳 2 小時內才算 active」在夜盤會炸——-M feed 的近月（TXFL6）
+// CTime 常停在舊值（如 00:27）但量價是活的，反而被濾掉；某季月合約（037）晚上
+// 22:56 有一筆 5 口的成交就成了「最新」，被誤選為近月。
+// 新邏輯：(1) 依「契約到期日（月份第 3 個週三）」剔除已到期月份——用當前盤面
+// 所屬交易日判斷（台北 15:00 後視為次一交易日的夜盤）；(2) 剩餘合約取成交量最大。
+// 不再依賴時間戳新舊。
+// TAIFEX 月份代碼是自家規則 A–L = 1–12 月（非 CME 標準 F/G/H/J/K/M/N/Q/U/V/X/Z）：
+// 實測 TXFK6=臺指期116(11月)、TXFL6=臺指期126(12月)、TXFA7=臺指期017(1月)、TXFC7=臺指期037(3月)。
+const MONTH_CODES: Record<string, number> = { A: 1, B: 2, C: 3, D: 4, E: 5, F: 6, G: 7, H: 8, I: 9, J: 10, K: 11, L: 12 };
+
+// SymbolID（如 TXFL6-F）→ 到期日（該月第 3 個週三）UTC ms；解析失敗時退回
+// 用中文契約名（臺指期126 = 12月+年末位6 → 2026/12）再試一次；都失敗回 null。
+export function contractExpiryMs(symbolID: string, dispName?: string): number | null {
+  const expiryOf = (mon: number, yearDigit: number): number => {
+    const nowY = new Date().getUTCFullYear();
+    let year = Math.floor(nowY / 10) * 10 + yearDigit;
+    if (year < nowY - 5) year += 10; // 年份數字循環（例如 2029 看到 '0' = 2030）
+    const dow = new Date(Date.UTC(year, mon - 1, 1)).getUTCDay();
+    const firstWed = 1 + ((3 - dow + 7) % 7);
+    return Date.UTC(year, mon - 1, firstWed + 14);
+  };
+  const m = /^TXF([A-Z])(\d)-[MF]$/.exec(symbolID || '');
+  if (m && MONTH_CODES[m[1]]) return expiryOf(MONTH_CODES[m[1]], Number(m[2]));
+  const n = /(\d{2})(\d)$/.exec(String(dispName || '').replace(/^臺指期|^台指期/, ''));
+  if (n && Number(n[1]) >= 1 && Number(n[1]) <= 12) return expiryOf(Number(n[1]), Number(n[2]));
+  return null;
+}
+
+// 目前盤面所屬「交易日」（台北時間）：15:00 後 = 次一日（夜盤所屬交易日）；
+// 15:00 前（含凌晨夜盤尾聲與日盤）= 當日。
+function sessionRefMs(): number {
+  const tp = new Date(Date.now() + 8 * 3600 * 1000); // 平移成台北牆鐘再用 UTC 讀
+  const dayStart = Date.UTC(tp.getUTCFullYear(), tp.getUTCMonth(), tp.getUTCDate());
+  return tp.getUTCHours() >= 15 ? dayStart + 86400000 : dayStart;
+}
+
 export function pickFrontContract(quotes: MisQuote[]): MisQuote | undefined {
   const contracts = quotes.filter(q => /^TXF[A-Z]\d-[MF]$/.test(q.SymbolID || ''));
   if (contracts.length === 0) return undefined;
-  const toNum = (v: string) => (!v || v === '-' ? 0 : parseFloat(v) || 0);
-  const stampMs = (c: MisQuote): number => {
-    const d = String(c.CDate || '');
-    const t = String(c.CTime || '').padEnd(6, '0');
-    if (!/^\d{8}$/.test(d) || !/^\d{6}$/.test(t)) return NaN;
-    return Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8),
-      +t.slice(0, 2) - 8, +t.slice(2, 4), +t.slice(4, 6)); // 台北時間 → UTC
-  };
-  let maxStamp = NaN;
-  for (const c of contracts) {
-    const s = stampMs(c);
-    if (!isNaN(s) && (isNaN(maxStamp) || s > maxStamp)) maxStamp = s;
-  }
-  const active = !isNaN(maxStamp)
-    ? contracts.filter(c => { const s = stampMs(c); return !isNaN(s) && s >= maxStamp - 2 * 3600 * 1000; })
-    : contracts;
-  let front = active[0] || contracts[0];
-  let maxVol = 0;
-  for (const c of active) {
+  const toNum = (v: string) => (!v || v === '-' ? 0 : parseFloat(String(v).replace(/,/g, '')) || 0);
+  const ref = sessionRefMs();
+  // (1) 剔除已到期月份（到期日 < 當前交易日）；全部過期時保底用原清單
+  const alive = contracts.filter(c => {
+    const e = contractExpiryMs(c.SymbolID || '', c.DispCName || c.DispEName);
+    return e === null || e >= ref;
+  });
+  const pool = alive.length ? alive : contracts;
+  // (2) 取成交量最大者
+  let front = pool[0];
+  let maxVol = -1;
+  for (const c of pool) {
     const v = toNum(c.CTotalVolume);
     if (v > maxVol) { maxVol = v; front = c; }
   }
