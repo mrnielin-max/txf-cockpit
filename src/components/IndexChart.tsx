@@ -8,18 +8,22 @@ const TABS = [
 ];
 
 interface Point { t: string; v: number }
+interface LastClose { value: number; change: number; pct: number; time: string; label: string }
 
 export default function IndexChart() {
   const [active, setActive] = useState(0);
   const [points, setPoints] = useState<Point[]>([]);
+  const [dayLabel, setDayLabel] = useState('');
+  const [lastClose, setLastClose] = useState<LastClose | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     setLoading(true);
     setPoints([]);
+    setLastClose(null);
     fetch(`/api/market-intraday?tab=${TABS[active].key}`)
       .then(r => r.json())
-      .then(d => setPoints(d.points || []))
+      .then(d => { setPoints(d.points || []); setDayLabel(d.dayLabel || ''); setLastClose(d.lastClose || null); })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [active]);
@@ -82,12 +86,29 @@ export default function IndexChart() {
             {up ? '▲' : '▼'} {Math.abs(change).toFixed(2)} ({up ? '+' : ''}{changePct.toFixed(2)}%)
           </span>
           <span style={{ fontSize: 12, color: '#484f58', marginLeft: 'auto' }}>
-            今日盤中 · {timeRange}
+            {dayLabel ? `${dayLabel} 盤中 · ` : '最近交易日盤中 · '}{timeRange}
           </span>
         </div>
       )}
 
+      {/* 無分時資料：顯示最後收盤狀況（用戶要求：非交易時段也要顯示，不能空白） */}
+      {!loading && points.length < 2 && lastClose && (
+        <div style={{ background: '#0d1117', borderRadius: 8, padding: '14px 16px', display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, color: '#d29922', fontWeight: 700 }}>🔒 非交易時段 · 最後收盤狀況</span>
+          <span style={{ fontSize: 11, color: '#8b949e' }}>{lastClose.label}{lastClose.time ? ` · ${lastClose.time}` : ''}</span>
+          <span style={{ fontSize: 26, fontWeight: 800, color: lastClose.change >= 0 ? '#ef4444' : '#22c55e', fontVariantNumeric: 'tabular-nums' }}>
+            {lastClose.value.toLocaleString('zh-TW', { minimumFractionDigits: 2 })}
+          </span>
+          {lastClose.change !== 0 && (
+            <span style={{ fontSize: 14, fontWeight: 700, color: lastClose.change >= 0 ? '#ef4444' : '#22c55e' }}>
+              {lastClose.change >= 0 ? '▲' : '▼'} {Math.abs(lastClose.change).toFixed(2)}（{lastClose.change >= 0 ? '+' : ''}{lastClose.pct.toFixed(2)}%）
+            </span>
+          )}
+        </div>
+      )}
+
       {/* 折線圖（無資料時縮成小高度提示列，不留大片空白） */}
+      {!(points.length < 2 && lastClose) && (
       <div style={{ background: '#0d1117', borderRadius: 8, overflow: 'hidden', height: points.length >= 2 || loading ? H + 8 : 'auto' }}>
         {loading ? (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: H + 8, color: '#484f58', fontSize: 13 }}>
@@ -95,8 +116,8 @@ export default function IndexChart() {
           </div>
         ) : points.length < 2 ? (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '10px 12px', color: '#6b7280', fontSize: 12.5, flexWrap: 'wrap', textAlign: 'center' }}>
-            <span>💤 非交易時段，無盤中即時資料</span>
-            <span style={{ color: '#484f58' }}>最新收盤價請看頁首報價列；盤中走勢開盤後自動載入</span>
+            <span>💤 非交易時段，分時資料來源暫無回應</span>
+            <span style={{ color: '#484f58' }}>最新收盤價請看頁首報價列；開盤後自動載入</span>
           </div>
         ) : (
           <svg width="100%" height={H + 8} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: 'block' }}>
@@ -111,6 +132,7 @@ export default function IndexChart() {
           </svg>
         )}
       </div>
+      )}
     </div>
   );
 }

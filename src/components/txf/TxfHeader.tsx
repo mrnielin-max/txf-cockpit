@@ -8,6 +8,8 @@ interface TxfData {
   spot: number;
   session?: SessionInfo;
   spotSession?: SessionInfo;
+  fallback?: boolean;
+  fallbackAsOf?: string;
   front: {
     symbol: string; name: string; last: number; ref: number;
     open: number; high: number; low: number; volume: number;
@@ -44,8 +46,21 @@ export default function TxfHeader() {
   const f = data.front;
   const sess = data.session;
   const closed = sess && sess.state !== 'open';
+  const hasData = !!(f && (f.last > 0 || f.ref > 0));
   const color = f.change > 0 ? up : f.change < 0 ? down : '#e6edf3';
   const t = f.time ? `${f.time.slice(0, 2)}:${f.time.slice(2, 4)}:${f.time.slice(4, 6)}` : '--';
+  const asOf = data.fallbackAsOf
+    ? new Date(data.fallbackAsOf).toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Taipei' })
+    : '';
+
+  if (!hasData) {
+    return (
+      <div className="panel" style={{ padding: 20, color: '#8b949e', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <span style={{ color: '#d29922', fontWeight: 700 }}>🔒 {sess?.label || '非交易時段'}</span>
+        <span>台指期報價來源暫無回應（TAIFEX MIS），無最後收盤快照可顯示 — 每 5 秒自動重試，恢復後自動載入。</span>
+      </div>
+    );
+  }
 
   return (
     <div className="panel" style={{ padding: 0, overflow: 'hidden' }}>
@@ -57,8 +72,11 @@ export default function TxfHeader() {
             {closed && (
               <span style={{ marginLeft: 8, color: '#d29922', fontWeight: 700 }}>🔒 {sess!.label}</span>
             )}
-            {sess && sess.state === 'open' && (
+            {sess && sess.state === 'open' && !data.fallback && (
               <span style={{ marginLeft: 8, color: '#3fb950', fontWeight: 700 }}>🟢 {sess.label}</span>
+            )}
+            {data.fallback && (
+              <span style={{ marginLeft: 8, color: '#3fb950', fontWeight: 700 }} title="報價來源暫未回應，顯示最後有效收盤快照">📌 最後收盤資料{asOf ? ` · ${asOf}` : ''}</span>
             )}
           </div>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 12 }}>
@@ -70,7 +88,7 @@ export default function TxfHeader() {
             </span>
           </div>
           <div style={{ color: '#8b949e', fontSize: 13, marginTop: 6 }}>
-            開 {f.open.toLocaleString()} · 高 {f.high.toLocaleString()} · 低 {f.low.toLocaleString()} · 量 {f.volume.toLocaleString()} 口
+            {f.open ? `開 ${f.open.toLocaleString()}` : '開 --'} · {f.high ? `高 ${f.high.toLocaleString()}` : '高 --'} · {f.low ? `低 ${f.low.toLocaleString()}` : '低 --'} · {f.volume ? `量 ${f.volume.toLocaleString()} 口` : '量 --'}
           </div>
         </div>
 
@@ -81,8 +99,8 @@ export default function TxfHeader() {
             color={f.basis > 0 ? up : f.basis < 0 ? down : '#e6edf3'}
             hint="正基差=期貨溢價（多頭結構）" />
           <MiniStat label="台指現貨" value={data.spot ? data.spot.toLocaleString() : '--'} sub="加權指數參考" />
-          <MiniStat label="委買 / 委賣" value={`${f.bid.toLocaleString()} / ${f.ask.toLocaleString()}`}
-            sub={`${f.bidSize} 口 / ${f.askSize} 口`} />
+          <MiniStat label="委買 / 委賣" value={f.bid || f.ask ? `${f.bid.toLocaleString()} / ${f.ask.toLocaleString()}` : '-- / --'}
+            sub={f.bidSize || f.askSize ? `${f.bidSize} 口 / ${f.askSize} 口` : '收盤後無委買賣檔'} />
           <MiniStat label="漲跌幅狀態" value={f.changePct >= 0 ? '偏多' : '偏空'}
             color={f.changePct >= 0 ? up : down}
             sub={Math.abs(f.changePct) > 2 ? '⚠ 波動放大，注意部位' : '正常波動區間'} />

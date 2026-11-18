@@ -126,6 +126,20 @@ async function fetchSocial(site: string, label: string, limit: number): Promise<
   }
 }
 
+// ── 精準相關性過濾（用戶要求：剔除 PTT 創作文、房產法拍等與台指期/台股決策無關內容）──
+// 1) BLOCK：命中任一非市場主題詞 → 直接剔除
+const BLOCK_RE = /房產|豪宅|法拍|地價|預售屋|買房|賣房|房貸|租屋|看房|車市|汽車|機車|演唱會|電影|戲劇|綜藝|球賽|棒球|籃球|NBA|足球|氣象|颱風|地震|疫情|美食|小吃|餐廳|麵店|蛋炒飯|蝦仁|老店|旅遊|景點|星座|運勢|彩券|樂透|刑案|社會版|娛樂|藝人|網紅|直播主|電競|選秀|問卦|卦|創作|廣告|洽特|標記|閒聊|公告板規/;
+// 2) 討論區壞標籤：[創作]/[廣告]/[公告] 等非資訊性文章
+const FORUM_BAD_TAG_RE = /^\s*(?:Fw:\s*|Re:\s*|Fw |\[\w+\]\s*)*\[(創作|廣告|洽特|標記|公告|閒聊|卦)\]/;
+// 3) REQUIRE：標題必須含市場相關詞（台股/期貨/總經/半導體/個股事件…）才留下
+const REQUIRE_RE = /台股|台指|加權|櫃買|大盤|盤中|盤後|開盤|收盤|漲停|跌停|期貨|期指|選擇權|台積電|聯發科|鴻海|台達|世芯|創意|外資|投信|自營|主力|當沖|現貨|融資|作多|放空|多單|空單|除息|除權|配息|存股|股息|庫藏股|回購|IPO|上市|上櫃|興櫃|法說|財報|營收|訂單|獲利|虧損|EPS|毛利|重挫|大漲|大跌|噴出|殺低|停損|停利|止損|止盈|加碼|減碼|布局|佈局|策略|技術面|籌碼|爆量|量增|量縮|買超|賣超|漲|跌|紅盤|黑盤|反彈|拉回|回檔|創高|新高|新低|崩|暴漲|暴跌|關稅|Fed|聯準會|鮑爾|降息|升息|利率|通膨|CPI|美債|公債|匯率|台幣|美元|美股|那斯達克|納斯達克|標普|道瓊|半導體|晶片|輝達|NVIDIA|黃仁勳|魏哲家|AI|日股|日經|日銀|韓股|三星|SK海力士|陸股|港股|A股|國安基金|結算|交割|違約|券商|金控|ETF|00\d{3}|高股息|正2|槓桿|反向|美光|AMD|特斯拉|蘋果|微軟|亞馬遜|Google|市場|股市|經濟|央行|降息|升息/;
+
+function relevant(item: NewsItem): boolean {
+  if (BLOCK_RE.test(item.title)) return false;
+  if (item.category === '討論區' && FORUM_BAD_TAG_RE.test(item.title)) return false;
+  return REQUIRE_RE.test(item.title);
+}
+
 export async function GET(req: NextRequest) {
   const tab = req.nextUrl.searchParams.get('tab') || 'all';
 
@@ -148,10 +162,11 @@ export async function GET(req: NextRequest) {
   }
 
   const results = await Promise.all(jobs);
-  // 去重 + 依時間排序
+  // 相關性過濾 + 去重 + 依時間排序
   const seen = new Set<string>();
   const all: NewsItem[] = [];
   for (const item of results.flat()) {
+    if (!relevant(item)) continue;
     const key = item.title.slice(0, 40);
     if (seen.has(key)) continue;
     seen.add(key);

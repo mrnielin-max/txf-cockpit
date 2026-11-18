@@ -62,3 +62,33 @@ export async function fetchMisQuoteList(
   if (l1.length) return { quotes: l1, marketType: '1', fresh: f1 };
   return { quotes: l0, marketType: '0', fresh: f0 };
 }
+
+// 近月合約挑選：成交量最大，且報價時間戳距最新報價 2 小時內（剔除已到期月份的陳舊報價）。
+// 教訓（2026-11-18）：結算日夜盤，到期月 K6 成交量仍最大但停在 01:40 舊價，被誤選為近月。
+export function pickFrontContract(quotes: MisQuote[]): MisQuote | undefined {
+  const contracts = quotes.filter(q => /^TXF[A-Z]\d-[MF]$/.test(q.SymbolID || ''));
+  if (contracts.length === 0) return undefined;
+  const toNum = (v: string) => (!v || v === '-' ? 0 : parseFloat(v) || 0);
+  const stampMs = (c: MisQuote): number => {
+    const d = String(c.CDate || '');
+    const t = String(c.CTime || '').padEnd(6, '0');
+    if (!/^\d{8}$/.test(d) || !/^\d{6}$/.test(t)) return NaN;
+    return Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8),
+      +t.slice(0, 2) - 8, +t.slice(2, 4), +t.slice(4, 6)); // 台北時間 → UTC
+  };
+  let maxStamp = NaN;
+  for (const c of contracts) {
+    const s = stampMs(c);
+    if (!isNaN(s) && (isNaN(maxStamp) || s > maxStamp)) maxStamp = s;
+  }
+  const active = !isNaN(maxStamp)
+    ? contracts.filter(c => { const s = stampMs(c); return !isNaN(s) && s >= maxStamp - 2 * 3600 * 1000; })
+    : contracts;
+  let front = active[0] || contracts[0];
+  let maxVol = 0;
+  for (const c of active) {
+    const v = toNum(c.CTotalVolume);
+    if (v > maxVol) { maxVol = v; front = c; }
+  }
+  return front;
+}
