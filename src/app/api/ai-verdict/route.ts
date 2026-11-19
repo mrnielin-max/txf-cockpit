@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { fetchMisQuoteList, MisQuote } from '@/lib/taifexMis';
+import { fetchMisQuoteList, MisQuote, fetchFrontBlock } from '@/lib/taifexMis';
 import { appendTapePoint, analyzeTape, type IntradayState } from '@/lib/tapeStore';
 
 export const revalidate = 0;
@@ -232,6 +232,12 @@ export async function GET(req: Request) {
   const pos = (posDirRaw === 'long' || posDirRaw === 'short') && posQty > 0 && posEntry && posEntry > 1000 && posEntry < 200000
     ? { dir: posDirRaw as 'long' | 'short', qty: posQty, entry: posEntry, mult: POS_MULT[posItem], item: posItem }
     : null;
+  // 商品別價格（2026-11-20 教訓）：微小大台收盤價各不相同（實測夜盤收盤
+  // 大台 38107／小台 38112／微台 38110）。部位為小台/微台時並行抓該商品
+  // 自己的近月價，損益與停損點位一律用它，禁止拿大台價套小台。
+  const posBlockP: Promise<any | null> = pos && pos.item !== 'TXF'
+    ? fetchFrontBlock(pos.item as 'MXF' | 'TMF', 5)
+    : Promise.resolve(null);
   const [txfQuotes, chipsTxt, twii1d, twii5m, spx1d, vixQ, tsmQ, a50Txt, nvdaQ, soxQ, twdQ, tnxQ, dxyQ, goldQ, oilQ, tsmAdrQ, esQ, nqQ, twnQ, smhQ, tsm5mQ, pttXml, ewtOpt, twii5y, socialTitles, newsAlerts] = await Promise.all([
     // 雙源取新（MT1 feed 可能整天停滯在上一交易日）
     fetchMisQuoteList('TXF', 5).then(r => r.quotes).catch(() => [] as MisQuote[]),
@@ -997,6 +1003,8 @@ export async function GET(req: Request) {
   })();
 
   // ════════ 综合建議（含時段偵測 + 週期止盈止損點位）════════
+  const posBlock = await posBlockP;
+  const posLast = posBlock && posBlock.last > 0 ? (posBlock.last as number) : null;
   const verdict = buildVerdict({
     totalScore, maxScore, scoreRatio, band, up5, down5, exp5, d1Up,
     refPrice, spotNow, frontLast, basisPct, streak3Down, streak3Up,
@@ -1004,6 +1012,7 @@ export async function GET(req: Request) {
     p10Pts, p50Pts, p90Pts, factorCount: factors.length,
     intraday,
     pos,
+    posLast, posItemName: posBlock?.name || '',
     cycle,
     levels,
   });
@@ -1164,6 +1173,7 @@ function buildVerdict(p: {
   factorCount: number;
   intraday: IntradayState | null;
   pos: { dir: 'long' | 'short'; qty: number; entry: number; mult: number; item: string } | null;
+  posLast: number | null; posItemName: string;
   cycle: CycleOut;
   levels: LevelsOut | null;
 }) {
@@ -1204,39 +1214,42 @@ function buildVerdict(p: {
   }
 
   // ════ 我的持倉（2026-11-17 用戶要求：最上方先輸入買/賣、張數、均價，再給數據與建議）════
-  if (p.pos && p.frontLast) {
+  // 持倉價格 = 部位所屬商品自己的近月價（posLast）優先；該商品 feed 暫不可用
+  // 才退回大台價，且文案明示。禁止默默拿大台價算小台損益。
+  const posPx = p.posLast ?? p.frontLast;
+  if (p.pos && posPx) {
     const ps = p.pos;
     const sign = ps.dir === 'long' ? 1 : -1;
-    const pnlPts = (p.frontLast - ps.entry) * sign;
+    const pnlPts = (posPx - ps.entry) * sign;
     const pnlTwd = pnlPts * ps.qty * ps.mult;
     const fmtT = (n: number) => (n >= 0 ? '+' : '') + Math.round(n).toLocaleString('zh-TW');
-    lines.push(`【我的持倉】${ps.item} ${ps.dir === 'long' ? '買（做多）' : '賣（做空）'} ${ps.qty} 張，均價 ${Math.round(ps.entry).toLocaleString()}｜現價 ${Math.round(p.frontLast).toLocaleString()}｜未實現${pnlPts >= 0 ? '獲利' : '虧損'} ${pnlPts >= 0 ? '+' : ''}${pnlPts.toFixed(0)} 點 = ${fmtT(pnlTwd)} TWD（每點 ${ps.mult} 元，未計手續費與交易稅）。風險敏感度：行情每逆向 100 點，損益 ${fmtT(-100 * ps.qty * ps.mult)} TWD。`);
+    lines.push(`【我的持倉】${ps.item} ${ps.dir === 'long' ? '買（做多）' : '賣（做空）'} ${ps.qty} 張，均價 ${Math.round(ps.entry).toLocaleString()}｜現價 ${Math.round(posPx).toLocaleString()}${p.posItemName ? `（${p.posItemName}近月）` : ''}${ps.item !== 'TXF' && p.posLast === null ? '［注意：此商品即時價暫無法取得，現以大台近月價代替試算］' : ''}｜未實現${pnlPts >= 0 ? '獲利' : '虧損'} ${pnlPts >= 0 ? '+' : ''}${pnlPts.toFixed(0)} 點 = ${fmtT(pnlTwd)} TWD（每點 ${ps.mult} 元，未計手續費與交易稅）。風險敏感度：行情每逆向 100 點，損益 ${fmtT(-100 * ps.qty * ps.mult)} TWD。`);
 
     const engineLong = s >= 4, engineShort = s <= -4;
     const idLow = p.intraday ? p.intraday.low : null;
     const idHigh = p.intraday ? p.intraday.high : null;
-    const mid = Math.round((idLow !== null && idHigh !== null) ? (idLow + idHigh) / 2 : p.frontLast);
+    const mid = Math.round((idLow !== null && idHigh !== null) ? (idLow + idHigh) / 2 : posPx);
     const inProfit = pnlPts > 0;
     let advice: string;
     if (ps.dir === 'long') {
       // 停損 = 日內結構（低點−30）與 1×波動距離取較緊者，且不少於 3 倍成本
       let stop = Math.round(Math.max(idLow !== null ? idLow - 30 : ps.entry - stopDist, ps.entry - stopDist));
       if (ps.entry - stop < costPts * 3) stop = Math.round(ps.entry - Math.max(costPts * 3, 60));
-      if (p.frontLast <= stop) {
+      if (posPx <= stop) {
         // 現價已跌破停損參考：紀律上早該出場，不能假装沒事續抱
         const altStop = Math.round(idLow !== null ? idLow - 30 : ps.entry - stopDist * 1.5);
-        advice = `⚠ 現價 ${Math.round(p.frontLast).toLocaleString()} 已跌破你的停損參考 ${stop.toLocaleString()} 點——依交易紀律這筆部位早該出場，目前等於「止損未執行」狀態。① 立即減碼至少一半，不要抱希望凹單；② 若你堅持續抱（引擎 ${s > 0 ? '+' : ''}${s} 分${s >= 4 ? '偏多，尚有依據' : s <= -4 ? '偏空，續抱風險極高' : '中性，續抱勝率無優勢'}），硬性停損必須改設 ${altStop.toLocaleString()} 點（日內低點−30），跌破無條件全數出場；③ 引擎翻多（≥ +4 分）前禁止攤平。`;
+        advice = `⚠ 現價 ${Math.round(posPx).toLocaleString()} 已跌破你的停損參考 ${stop.toLocaleString()} 點——依交易紀律這筆部位早該出場，目前等於「止損未執行」狀態。① 立即減碼至少一半，不要抱希望凹單；② 若你堅持續抱（引擎 ${s > 0 ? '+' : ''}${s} 分${s >= 4 ? '偏多，尚有依據' : s <= -4 ? '偏空，續抱風險極高' : '中性，續抱勝率無優勢'}），硬性停損必須改設 ${altStop.toLocaleString()} 點（日內低點−30），跌破無條件全數出場；③ 引擎翻多（≥ +4 分）前禁止攤平。`;
       } else if (engineShort) {
-        advice = `你的多單與引擎總方向「相反」（${s} 分偏空）：勿攤平、勿凹單。${inProfit ? `① 目前還有 +${pnlPts.toFixed(0)} 點獲利，先減碼一半鎖利；` : `① 目前已虧 ${Math.abs(pnlPts).toFixed(0)} 點，${mid >= p.frontLast ? `反彈到日內中點 ${mid.toLocaleString()} 附近先減碼一半止血` : `現價已在日內中點（${mid.toLocaleString()}）上方，逢反彈無力先減碼一半止血`}；`}② 剩餘部位停損 ${stop.toLocaleString()} 點（日內低點−30 緩衝／1×波動距離取較緊者），跌破無條件出場；③ 總分翻正到 +4 以上才考慮重新做多。`;
+        advice = `你的多單與引擎總方向「相反」（${s} 分偏空）：勿攤平、勿凹單。${inProfit ? `① 目前還有 +${pnlPts.toFixed(0)} 點獲利，先減碼一半鎖利；` : `① 目前已虧 ${Math.abs(pnlPts).toFixed(0)} 點，${mid >= posPx ? `反彈到日內中點 ${mid.toLocaleString()} 附近先減碼一半止血` : `現價已在日內中點（${mid.toLocaleString()}）上方，逢反彈無力先減碼一半止血`}；`}② 剩餘部位停損 ${stop.toLocaleString()} 點（日內低點−30 緩衝／1×波動距離取較緊者），跌破無條件出場；③ 總分翻正到 +4 以上才考慮重新做多。`;
       } else if (engineLong) {
         // 鎖利停損修正（2026-11-20）：多單的停損是「賣出單」，必須低於現價才有保護作用。
         // 舊版無條件用 entry+20，獲利很淺時會把停損放到現價「上方」，等於沒有停損。三層邏輯與空單對稱。
         const lockLong = Math.round(ps.entry + 20);
         let trailLongNote: string;
-        if (lockLong <= p.frontLast - 15) {
+        if (lockLong <= posPx - 15) {
           const t = Math.max(stop, lockLong);
           trailLongNote = `已獲利 +${pnlPts.toFixed(0)} 點，停損上移到 ${t.toLocaleString()} 點（鎖利：就算被出場也保住約 ${Math.round(t - ps.entry)} 點利潤）`;
-        } else if (pnlPts >= 30 && ps.entry <= p.frontLast - 15) {
+        } else if (pnlPts >= 30 && ps.entry <= posPx - 15) {
           const t = Math.max(stop, Math.round(ps.entry));
           trailLongNote = `已獲利 +${pnlPts.toFixed(0)} 點，停損上移到進場價 ${t.toLocaleString()} 點（保本：之後這筆不會再虧）`;
         } else if (inProfit) {
@@ -1252,12 +1265,12 @@ function buildVerdict(p: {
     } else {
       let stop = Math.round(Math.min(idHigh !== null ? idHigh + 30 : ps.entry + stopDist, ps.entry + stopDist));
       if (stop - ps.entry < costPts * 3) stop = Math.round(ps.entry + Math.max(costPts * 3, 60));
-      if (p.frontLast >= stop) {
+      if (posPx >= stop) {
         // 現價已漲破停損參考：紀律上早該回補，不能假装沒事續抱
         const altStop = Math.round(idHigh !== null ? idHigh + 30 : ps.entry + stopDist * 1.5);
-        advice = `⚠ 現價 ${Math.round(p.frontLast).toLocaleString()} 已漲破你的停損參考 ${stop.toLocaleString()} 點——依交易紀律這筆空單早該回補，目前等於「止損未執行」狀態。① 立即回補至少一半，不要抱希望凹單；② 若你堅持續抱（引擎 ${s > 0 ? '+' : ''}${s} 分${s <= -4 ? '偏空，尚有依據' : s >= 4 ? '偏多，續抱風險極高' : '中性，續抱勝率無優勢'}），硬性停損必須改設 ${altStop.toLocaleString()} 點（日內高點＋30），漲破無條件全數回補；③ 引擎翻空（≤ −4 分）前禁止加空。`;
+        advice = `⚠ 現價 ${Math.round(posPx).toLocaleString()} 已漲破你的停損參考 ${stop.toLocaleString()} 點——依交易紀律這筆空單早該回補，目前等於「止損未執行」狀態。① 立即回補至少一半，不要抱希望凹單；② 若你堅持續抱（引擎 ${s > 0 ? '+' : ''}${s} 分${s <= -4 ? '偏空，尚有依據' : s >= 4 ? '偏多，續抱風險極高' : '中性，續抱勝率無優勢'}），硬性停損必須改設 ${altStop.toLocaleString()} 點（日內高點＋30），漲破無條件全數回補；③ 引擎翻空（≤ −4 分）前禁止加空。`;
       } else if (engineLong) {
-        advice = `你的空單與引擎總方向「相反」（+${s} 分偏多）：勿凹單、勿加空。${inProfit ? `① 目前還有 +${pnlPts.toFixed(0)} 點獲利，先減碼一半鎖利；` : `① 目前已虧 ${Math.abs(pnlPts).toFixed(0)} 點，${mid <= p.frontLast ? `回檔到日內中點 ${mid.toLocaleString()} 附近先減碼一半止血` : `現價已在日內中點（${mid.toLocaleString()}）下方，逢反彈無力先減碼一半止血`}；`}② 剩餘部位停損 ${stop.toLocaleString()} 點（日內高點＋30 緩衝／1×波動距離取較緊者），漲破無條件回補；③ 總分翻負到 −4 以下才考慮重新做空。`;
+        advice = `你的空單與引擎總方向「相反」（+${s} 分偏多）：勿凹單、勿加空。${inProfit ? `① 目前還有 +${pnlPts.toFixed(0)} 點獲利，先減碼一半鎖利；` : `① 目前已虧 ${Math.abs(pnlPts).toFixed(0)} 點，${mid <= posPx ? `回檔到日內中點 ${mid.toLocaleString()} 附近先減碼一半止血` : `現價已在日內中點（${mid.toLocaleString()}）下方，逢反彈無力先減碼一半止血`}；`}② 剩餘部位停損 ${stop.toLocaleString()} 點（日內高點＋30 緩衝／1×波動距離取較緊者），漲破無條件回補；③ 總分翻負到 −4 以下才考慮重新做空。`;
       } else if (engineShort) {
         // 鎖利停損修正（2026-11-20 用戶指正）：空單的停損是「買回單」，必須高於現價才有保護作用。
         // 舊版無條件用 entry−20，獲利很淺時（如僅 +2 點）會把停損放到現價「下方」，等於沒有停損。
@@ -1265,10 +1278,10 @@ function buildVerdict(p: {
         // 獲利太淺 → 維持原保護性停損，並明講原因。
         const lockShort = Math.round(ps.entry - 20);
         let trailShortNote: string;
-        if (lockShort >= p.frontLast + 15) {
+        if (lockShort >= posPx + 15) {
           const t = Math.min(stop, lockShort);
           trailShortNote = `已獲利 +${pnlPts.toFixed(0)} 點，停損下移到 ${t.toLocaleString()} 點（鎖利：就算被買回也保住約 ${Math.round(ps.entry - t)} 點利潤）`;
-        } else if (pnlPts >= 30 && ps.entry >= p.frontLast + 15) {
+        } else if (pnlPts >= 30 && ps.entry >= posPx + 15) {
           const t = Math.min(stop, Math.round(ps.entry));
           trailShortNote = `已獲利 +${pnlPts.toFixed(0)} 點，停損下移到進場價 ${t.toLocaleString()} 點（保本：之後這筆不會再虧）`;
         } else if (inProfit) {

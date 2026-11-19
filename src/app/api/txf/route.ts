@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { promises as fsp } from 'fs';
-import { fetchMisQuoteList, pickFrontContract } from '@/lib/taifexMis';
+import { fetchMisQuoteList, pickFrontContract, fetchFrontBlock } from '@/lib/taifexMis';
 import { txfSession, spotSession } from '@/lib/sessionState';
 
 export const dynamic = 'force-dynamic';
@@ -54,10 +54,21 @@ export async function GET() {
     let txfList: any[] = [];
     let marketType: any = null;
     let fresh: any = null;
+
+    // 小台（MXF）／微台（TMF）近月與大台（TXF）並行抓取。
+    // 教訓（2026-11-20）：微小大台是三個獨立商品、收盤價各不相同（實測夜盤收盤
+    // 大台 38107／小台 38112／微台 38110）。持倉損益與建議必須用部位所屬商品
+    // 自己的近月價，前端依使用者選擇的商品取對應區塊。
+    const miniP  = fetchFrontBlock('MXF');
+    const microP = fetchFrontBlock('TMF');
+
     try {
       const mis = await fetchMisQuoteList('TXF');
       txfList = mis.quotes; marketType = mis.marketType; fresh = mis.fresh;
     } catch {}
+
+    const frontMini  = await miniP;
+    const frontMicro = await microP;
 
     // 單月合約（排除含 '/' 的價差組合）：MT0 後綴 -F、MT1 後綴 -M
     let txfContracts = txfList.filter(q => /^TXF[A-Z]\d-[MF]$/.test(q.SymbolID || ''));
@@ -99,6 +110,8 @@ export async function GET() {
           fallback: true,
           fallbackAsOf,
           front: lg.front,
+          frontMini: lg.frontMini ?? null,
+          frontMicro: lg.frontMicro ?? null,
           contracts: lg.contracts ?? [],
           fetchedAt: new Date().toISOString(),
         }, NO_STORE);
@@ -185,6 +198,8 @@ export async function GET() {
         })(),
       },
       contracts,
+      frontMini,   // 小台近月（{symbol,name,last,ref,change,changePct,date,time,...} 或 null）
+      frontMicro,  // 微台近月
       fetchedAt: new Date().toISOString(),
     };
 

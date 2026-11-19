@@ -26,8 +26,9 @@ export default function MyPosition() {
   const [qty, setQty] = useState('');
   const [entry, setEntry] = useState('');
   const [saved, setSaved] = useState<MyPos | null>(null);
-  const [last, setLast] = useState<number | null>(null);
-  const [chgPct, setChgPct] = useState<number | null>(null);
+  // 三商品即時價區塊（TXF=大台 front、MXF=小台 frontMini、TMF=微台 frontMicro）。
+  // 教訓（2026-11-20）：微小大台收盤價各不相同，顯示與損益必須用所選/所存商品自己的價。
+  const [blocks, setBlocks] = useState<Record<string, any>>({ TXF: null, MXF: null, TMF: null });
   const [savedAt, setSavedAt] = useState('');
 
   // 讀取已存部位（含舊版壞 key 遷移：早期版本曾把資料存在錯誤 key 下）
@@ -48,16 +49,29 @@ export default function MyPosition() {
     } catch { /* ignore */ }
   }, []);
 
-  // 即時價格（/api/txf 輕量端點，10 秒同步）
+  // 即時價格（/api/txf 輕量端點，10 秒同步）：大/小/微台各存自己的近月區塊
   useEffect(() => {
     let alive = true;
     const pull = () => fetch('/api/txf', { cache: 'no-store' }).then(r => r.json()).then(d => {
-      if (!alive || !d?.ok || !d?.front?.last) return;
-      setLast(d.front.last); setChgPct(d.front.changePct ?? null);
+      if (!alive || !d?.ok) return;
+      setBlocks({
+        TXF: d.front?.last > 0 ? d.front : null,
+        MXF: d.frontMini?.last > 0 ? d.frontMini : null,
+        TMF: d.frontMicro?.last > 0 ? d.frontMicro : null,
+      });
     }).catch(() => {});
     pull(); const t = setInterval(pull, 10 * 1000);
     return () => { alive = false; clearInterval(t); };
   }, []);
+
+  // 顯示價 = 下拉選到的商品自己；損益價 = 已存部位商品自己（該商品 feed 缺席才退回大台價並標示）
+  const shown = blocks[item] ?? null;
+  const last = shown?.last ?? null;
+  const chgPct = shown?.changePct ?? null;
+  const posItemKey = saved?.item ?? item;
+  const posBlk = blocks[posItemKey] ?? null;
+  const posLast: number | null = posBlk?.last ?? blocks.TXF?.last ?? null;
+  const posLastIsProxy = !posBlk && posItemKey !== 'TXF' && !!blocks.TXF?.last;
 
   const save = useCallback(() => {
     const q = Math.max(0, Math.min(9999, parseInt(qty || '0', 10) || 0));
@@ -77,12 +91,12 @@ export default function MyPosition() {
     window.dispatchEvent(new CustomEvent('txf-pos-change'));
   };
 
-  // 未實現損益
-  const mult = MULT[item] ?? 200;
+  // 未實現損益（以「已存部位」的商品與該商品自己的現價計算）
+  const mult = MULT[posItemKey] ?? 200;
   let pnl: { pts: number; twd: number } | null = null;
-  if (saved && saved.dir !== 'none' && saved.entry && last) {
+  if (saved && saved.dir !== 'none' && saved.entry && posLast) {
     const sign = saved.dir === 'long' ? 1 : -1;
-    const pts = (last - saved.entry) * sign;
+    const pts = (posLast - saved.entry) * sign;
     pnl = { pts, twd: pts * saved.qty * mult };
   }
   const risk100 = saved && saved.dir !== 'none' ? 100 * saved.qty * mult : null;
@@ -106,8 +120,9 @@ export default function MyPosition() {
         </span>
         {last && (
           <span style={{ marginLeft: 'auto', fontSize: 13, color: '#e6edf3' }}>
-            現價 <b>{last.toLocaleString()}</b>
+            {item} 現價 <b>{last.toLocaleString()}</b>
             {chgPct !== null && <span style={{ color: chgPct >= 0 ? '#f85149' : '#3fb950', marginLeft: 6 }}>{chgPct >= 0 ? '+' : ''}{chgPct}%</span>}
+            {shown?.name && <span style={{ color: '#6b7280', fontSize: 11.5, marginLeft: 6 }}>({shown.name})</span>}
           </span>
         )}
       </div>
@@ -148,7 +163,9 @@ export default function MyPosition() {
               未實現損益：<b style={{ color: pnl.pts >= 0 ? '#f85149' : '#3fb950', fontSize: 15 }}>
                 {pnl.pts >= 0 ? '+' : ''}{pnl.pts.toFixed(0)} 點 = {pnl.twd >= 0 ? '+' : ''}{Math.round(pnl.twd).toLocaleString()} TWD
               </b>
-              <span style={{ color: '#8b949e', fontSize: 12 }}>（未計成本：手續費約每張每邊 NT$200、交易稅約成交金額十萬分之一）</span>
+              <span style={{ color: '#6b7280', fontSize: 12 }}>
+                （以 {posBlk?.name || '大台指期貨近月'} 價 {posLast?.toLocaleString()} 計算{posLastIsProxy ? '；小/微台即時價暫無法取得，先以大台價代替' : ''}；未計成本：手續費約每張每邊 NT$200、交易稅約成交金額十萬分之一）
+              </span>
             </div>
           )}
           {risk100 !== null && (
@@ -159,7 +176,7 @@ export default function MyPosition() {
           )}
         </div>
       )}
-      {saved && saved.dir !== 'none' && !pnl && last === null && (
+      {saved && saved.dir !== 'none' && !pnl && posLast === null && (
         <div style={{ marginTop: 8, color: '#8b949e', fontSize: 12.5 }}>現價載入中…</div>
       )}
     </div>

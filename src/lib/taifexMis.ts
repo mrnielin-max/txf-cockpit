@@ -10,7 +10,7 @@ const MIS_URL = 'https://mis.taifex.com.tw/futures/api/getQuoteList';
 const MIS_HEADERS = {
   'Content-Type': 'application/json',
   'Origin': 'https://mis.taifex.com.tw',
-  'Referer': 'https://mis.taifex.com.tw/futures/zh/RegularTrading/GroupQuery',
+  'Referer': 'https://mis.taifex.com.tw/futures/RegularSession/EquityIndices/FuturesDomestic',
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
 };
 
@@ -25,7 +25,19 @@ export async function fetchMisRawList(
     const res = await fetch(MIS_URL, {
       method: 'POST',
       headers: MIS_HEADERS,
-      body: JSON.stringify({ MarketType: marketType, CommodityID: commodityID }),
+      // 教訓（2026-11-20）：此 API 的商品欄位是 CID（完整 pageAttr 結構），舊寫法
+      // CommodityID 會被無視、永遠回 TXF。大台 CID=TXF、小台 CID=MXF、微台 CID=TMF。
+      body: JSON.stringify({
+        MarketType: marketType,
+        SymbolType: 'F',
+        KindID: '1',
+        CID: commodityID,
+        ExpireMonth: '',
+        RowSize: '全部',
+        PageNo: '',
+        SortColumn: '',
+        AscDesc: 'A',
+      }),
       signal: AbortSignal.timeout(timeout),
       next: { revalidate: revalidateSec },
     } as RequestInit);
@@ -37,10 +49,15 @@ export async function fetchMisRawList(
   }
 }
 
-// 清單新鮮度 = 所有報價中最大的 CDate+CTime
+// 清單新鮮度 = 「有實際成交價」的報價中最大的 CDate+CTime。
+// 教訓（2026-11-20）：日盤 feed（MT0 -F）在凌晨~開盤前 CDate 已翻成新交易日但
+// CLastPrice 空值，若不過濾會單憑日期較新勝出，把夜盤收盤價（MT1 -M）蓋掉，
+// 前端顯示 last=0。無成交價的行一律不計入新鮮度。
 function freshness(list: MisQuote[]): string {
   let best = '';
   for (const q of list) {
+    const last = parseFloat(String(q.CLastPrice || '').replace(/,/g, '')) || 0;
+    if (last <= 0) continue;
     const t = (q.CDate || '') + (q.CTime || '');
     if (t.length >= 8 && t > best) best = t;
   }
@@ -85,9 +102,10 @@ export function contractExpiryMs(symbolID: string, dispName?: string): number | 
     const firstWed = 1 + ((3 - dow + 7) % 7);
     return Date.UTC(year, mon - 1, firstWed + 14);
   };
-  const m = /^TXF([A-Z])(\d)-[MF]$/.exec(symbolID || '');
+  const m = /^(?:TXF|MXF|TMF)([A-Z])(\d)-[MF]$/.exec(symbolID || '');
   if (m && MONTH_CODES[m[1]]) return expiryOf(MONTH_CODES[m[1]], Number(m[2]));
-  const n = /(\d{2})(\d)$/.exec(String(dispName || '').replace(/^臺指期|^台指期/, ''));
+  // 中文名保底：臺指期126/小臺指期126/微臺指期126 → 12月+年末位6 → 2026/12
+  const n = /(\d{2})(\d)$/.exec(String(dispName || '').replace(/^.*期/, ''));
   if (n && Number(n[1]) >= 1 && Number(n[1]) <= 12) return expiryOf(Number(n[1]), Number(n[2]));
   return null;
 }
@@ -100,8 +118,11 @@ function sessionRefMs(): number {
   return tp.getUTCHours() >= 15 ? dayStart + 86400000 : dayStart;
 }
 
-export function pickFrontContract(quotes: MisQuote[]): MisQuote | undefined {
-  const contracts = quotes.filter(q => /^TXF[A-Z]\d-[MF]$/.test(q.SymbolID || ''));
+// prefix：商品代碼前綴（TXF=大台、MXF=小台、TMF=微台）。週契約（MX4K6、MX1L6
+// 等 3 碼）不符合 [A-Z]\d 模式，會被自然排除。
+export function pickFrontContract(quotes: MisQuote[], prefix = 'TXF'): MisQuote | undefined {
+  const re = new RegExp(`^${prefix}[A-Z]\\d-[MF]$`);
+  const contracts = quotes.filter(q => re.test(q.SymbolID || ''));
   if (contracts.length === 0) return undefined;
   const toNum = (v: string) => (!v || v === '-' ? 0 : parseFloat(String(v).replace(/,/g, '')) || 0);
   const ref = sessionRefMs();
@@ -119,4 +140,44 @@ export function pickFrontContract(quotes: MisQuote[]): MisQuote | undefined {
     if (v > maxVol) { maxVol = v; front = c; }
   }
   return front;
+}
+
+// 商品近月報價區塊（小台 MXF／微台 TMF 用）：雙源並抓取較新者，回簡化結構。
+// 教訓（2026-11-20）：微小大台是三個獨立商品、收盤價各不相同（實測夜盤收盤
+// 大台 38107／小台 38112／微台 38110），持倉損益與建議必須用「部位所屬商品」
+// 自己的近月價，不可拿大台價套小台。
+export async function fetchFrontBlock(
+  commodityID: 'MXF' | 'TMF',
+  revalidateSec = 5,
+): Promise<any | null> {
+  try {
+    const mis = await fetchMisQuoteList(commodityID, revalidateSec);
+    const fr = pickFrontContract(mis.quotes, commodityID);
+    if (!fr) return null;
+    const toNum = (v: string) => (!v || v === '-' ? 0 : parseFloat(String(v).replace(/,/g, '')) || 0);
+    const last = toNum(fr.CLastPrice);
+    const ref = toNum(fr.CRefPrice);
+    if (last <= 0 && ref <= 0) return null;
+    const change = last - ref;
+    return {
+      symbol: fr.SymbolID || '',
+      name: fr.DispCName || fr.DispEName || '',
+      last,
+      ref,
+      open: toNum(fr.COpenPrice),
+      high: toNum(fr.CHighPrice),
+      low: toNum(fr.CLowPrice),
+      volume: toNum(fr.CTotalVolume),
+      change,
+      changePct: ref > 0 ? parseFloat(((change / ref) * 100).toFixed(2)) : 0,
+      bid: toNum(fr.CBidPrice1),
+      ask: toNum(fr.CAskPrice1),
+      date: fr.CDate || '',
+      time: fr.CTime || '',
+      marketType: mis.marketType,
+      fresh: mis.fresh,
+    };
+  } catch {
+    return null;
+  }
 }
