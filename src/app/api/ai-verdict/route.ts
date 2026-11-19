@@ -1229,7 +1229,22 @@ function buildVerdict(p: {
       } else if (engineShort) {
         advice = `你的多單與引擎總方向「相反」（${s} 分偏空）：勿攤平、勿凹單。${inProfit ? `① 目前還有 +${pnlPts.toFixed(0)} 點獲利，先減碼一半鎖利；` : `① 目前已虧 ${Math.abs(pnlPts).toFixed(0)} 點，${mid >= p.frontLast ? `反彈到日內中點 ${mid.toLocaleString()} 附近先減碼一半止血` : `現價已在日內中點（${mid.toLocaleString()}）上方，逢反彈無力先減碼一半止血`}；`}② 剩餘部位停損 ${stop.toLocaleString()} 點（日內低點−30 緩衝／1×波動距離取較緊者），跌破無條件出場；③ 總分翻正到 +4 以上才考慮重新做多。`;
       } else if (engineLong) {
-        advice = `你的多單與引擎方向「一致」（+${s} 分偏多），可續抱：${inProfit ? `已獲利 +${pnlPts.toFixed(0)} 點，停損上移到 ${Math.max(stop, Math.round(ps.entry + 20)).toLocaleString()} 點（保本＋鎖利），` : `保護性停損設 ${stop.toLocaleString()} 點，`}跌破才無條件出場。停利參考：+${tpDist} 點（約 ${Math.round(ps.entry + tpDist).toLocaleString()}）先減 1/3～1/2，剩餘用週期中位 ${p.p50Pts ? p.p50Pts.toLocaleString() : '--'} 點做目標、移動停損跟著日內低點上移。`;
+        // 鎖利停損修正（2026-11-20）：多單的停損是「賣出單」，必須低於現價才有保護作用。
+        // 舊版無條件用 entry+20，獲利很淺時會把停損放到現價「上方」，等於沒有停損。三層邏輯與空單對稱。
+        const lockLong = Math.round(ps.entry + 20);
+        let trailLongNote: string;
+        if (lockLong <= p.frontLast - 15) {
+          const t = Math.max(stop, lockLong);
+          trailLongNote = `已獲利 +${pnlPts.toFixed(0)} 點，停損上移到 ${t.toLocaleString()} 點（鎖利：就算被出場也保住約 ${Math.round(t - ps.entry)} 點利潤）`;
+        } else if (pnlPts >= 30 && ps.entry <= p.frontLast - 15) {
+          const t = Math.max(stop, Math.round(ps.entry));
+          trailLongNote = `已獲利 +${pnlPts.toFixed(0)} 點，停損上移到進場價 ${t.toLocaleString()} 點（保本：之後這筆不會再虧）`;
+        } else if (inProfit) {
+          trailLongNote = `已獲利 +${pnlPts.toFixed(0)} 點，但獲利還太淺、停損暫時無法上移（多單停損必須留在現價下方才有保護作用，移到現價上方等於沒有停損），先維持保護性停損 ${stop.toLocaleString()} 點`;
+        } else {
+          trailLongNote = `保護性停損設 ${stop.toLocaleString()} 點`;
+        }
+        advice = `你的多單與引擎方向「一致」（+${s} 分偏多），可續抱：${trailLongNote}，價格跌到停損點位就無條件出場（多單的停損在現價下方，這是正確方向）。停利參考：漲到 +${tpDist} 點（約 ${Math.round(ps.entry + tpDist).toLocaleString()}）先減 1/3～1/2，剩餘用週期中位 ${p.p50Pts ? p.p50Pts.toLocaleString() : '--'} 點做目標、移動停損跟著日內低點上移。`;
       } else {
         advice = `引擎目前「中性」（${s} 分），多單可抱但勿加碼：停損 ${stop.toLocaleString()} 點跌破就出場；等總分 ≥ +4（轉多）再考慮加碼，若轉 ≤ −4（轉空）先減碼一半。`;
       }
@@ -1244,7 +1259,24 @@ function buildVerdict(p: {
       } else if (engineLong) {
         advice = `你的空單與引擎總方向「相反」（+${s} 分偏多）：勿凹單、勿加空。${inProfit ? `① 目前還有 +${pnlPts.toFixed(0)} 點獲利，先減碼一半鎖利；` : `① 目前已虧 ${Math.abs(pnlPts).toFixed(0)} 點，${mid <= p.frontLast ? `回檔到日內中點 ${mid.toLocaleString()} 附近先減碼一半止血` : `現價已在日內中點（${mid.toLocaleString()}）下方，逢反彈無力先減碼一半止血`}；`}② 剩餘部位停損 ${stop.toLocaleString()} 點（日內高點＋30 緩衝／1×波動距離取較緊者），漲破無條件回補；③ 總分翻負到 −4 以下才考慮重新做空。`;
       } else if (engineShort) {
-        advice = `你的空單與引擎方向「一致」（${s} 分偏空），可續抱：${inProfit ? `已獲利 +${pnlPts.toFixed(0)} 點，停損下移到 ${Math.min(stop, Math.round(ps.entry - 20)).toLocaleString()} 點（保本＋鎖利），` : `保護性停損設 ${stop.toLocaleString()} 點，`}漲破才無條件回補。停利參考：−${tpDist} 點（約 ${Math.round(ps.entry - tpDist).toLocaleString()}）先減 1/3～1/2，剩餘用週期悲觀 ${p.p10Pts ? p.p10Pts.toLocaleString() : '--'} 點做目標、移動停損跟著日內高點下移。`;
+        // 鎖利停損修正（2026-11-20 用戶指正）：空單的停損是「買回單」，必須高於現價才有保護作用。
+        // 舊版無條件用 entry−20，獲利很淺時（如僅 +2 點）會把停損放到現價「下方」，等於沒有停損。
+        // 新版三層：獲利夠深 → 鎖利停損（entry−20，須高於現價+15 緩衝）；獲利中等 → 保本（entry）；
+        // 獲利太淺 → 維持原保護性停損，並明講原因。
+        const lockShort = Math.round(ps.entry - 20);
+        let trailShortNote: string;
+        if (lockShort >= p.frontLast + 15) {
+          const t = Math.min(stop, lockShort);
+          trailShortNote = `已獲利 +${pnlPts.toFixed(0)} 點，停損下移到 ${t.toLocaleString()} 點（鎖利：就算被買回也保住約 ${Math.round(ps.entry - t)} 點利潤）`;
+        } else if (pnlPts >= 30 && ps.entry >= p.frontLast + 15) {
+          const t = Math.min(stop, Math.round(ps.entry));
+          trailShortNote = `已獲利 +${pnlPts.toFixed(0)} 點，停損下移到進場價 ${t.toLocaleString()} 點（保本：之後這筆不會再虧）`;
+        } else if (inProfit) {
+          trailShortNote = `已獲利 +${pnlPts.toFixed(0)} 點，但獲利還太淺、停損暫時無法下移（空單停損必須留在現價上方才有保護作用，移到現價下方等於沒有停損），先維持保護性停損 ${stop.toLocaleString()} 點`;
+        } else {
+          trailShortNote = `保護性停損設 ${stop.toLocaleString()} 點`;
+        }
+        advice = `你的空單與引擎方向「一致」（${s} 分偏空），可續抱：${trailShortNote}，價格漲到停損點位就無條件回補（空單的停損在現價上方，這是正確方向）。停利參考：跌到 −${tpDist} 點（約 ${Math.round(ps.entry - tpDist).toLocaleString()}）先減 1/3～1/2，剩餘用週期悲觀 ${p.p10Pts ? p.p10Pts.toLocaleString() : '--'} 點做目標、移動停損跟著日內高點下移。`;
       } else {
         advice = `引擎目前「中性」（${s} 分），空單可抱但勿加碼：停損 ${stop.toLocaleString()} 點漲破就出場；等總分 ≤ −4（轉空）再考慮加碼，若轉 ≥ +4（轉多）先減碼一半。`;
       }
