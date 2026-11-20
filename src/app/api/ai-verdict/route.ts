@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { fetchMisQuoteList, MisQuote, fetchFrontBlock, pickFrontContract } from '@/lib/taifexMis';
+import { fetchMisQuoteList, MisQuote, fetchFrontBlock, pickFrontContract, fetchSiteTxf } from '@/lib/taifexMis';
 import { appendTapePoint, analyzeTape, type IntradayState } from '@/lib/tapeStore';
 
 export const revalidate = 0;
@@ -293,6 +293,18 @@ export async function GET(req: Request) {
       frontVol = num(fq.CTotalVolume);
     }
   } catch { /* ignore */ }
+  // MIS 失聯 fallback（教訓 2026-11-20 夜盤：TAIFEX 間歇性擋 Vercel 節點 IP）：
+  // 改抓本站 /api/txf 的 last-good 快照，讓建議照產而不是整份報「無法取得現價」。
+  let frontRefStale = false;
+  if (frontLast === null) {
+    const fb = await fetchSiteTxf();
+    const fl = num(String(fb?.front?.last ?? ''));
+    if (fl !== null && fl > 0) {
+      frontLast = fl;
+      frontVol = num(String(fb?.front?.volume ?? '')) ?? frontVol;
+      frontRefStale = !!fb?.fallback;
+    }
+  }
 
   // ── 日報酬序列 ──
   const closes: number[] = [];
@@ -1006,7 +1018,16 @@ export async function GET(req: Request) {
 
   // ════════ 综合建議（含時段偵測 + 週期止盈止損點位）════════
   const posBlock = await posBlockP;
-  const posLast = posBlock && posBlock.last > 0 ? (posBlock.last as number) : null;
+  let posLast = posBlock && posBlock.last > 0 ? (posBlock.last as number) : null;
+  let posItemName = posBlock?.name || '';
+  // 部位商品（MXF/TMF）的 MIS 也失聯時，用本站 /api/txf 快照中該商品自己的
+  // last-good 價補上（商品別一致性：不可直接拿大台價冒充小台/微台）。
+  if (pos && pos.item !== 'TXF' && posLast === null) {
+    const fb = await fetchSiteTxf();
+    const key = pos.item === 'MXF' ? 'frontMini' : 'frontMicro';
+    const pl = num(String(fb?.[key]?.last ?? ''));
+    if (pl !== null && pl > 0) { posLast = pl; posItemName = fb?.[key]?.name || posItemName; }
+  }
   const verdict = buildVerdict({
     totalScore, maxScore, scoreRatio, band, up5, down5, exp5, d1Up,
     refPrice, spotNow, frontLast, basisPct, streak3Down, streak3Up,
@@ -1014,10 +1035,16 @@ export async function GET(req: Request) {
     p10Pts, p50Pts, p90Pts, factorCount: factors.length,
     intraday,
     pos,
-    posLast, posItemName: posBlock?.name || '',
+    posLast, posItemName,
     cycle,
     levels,
   });
+  // MIS 失聯、價格來自 last-good 快照時，在建議末尾明確標示（不讓用戶誤以為是即時價）
+  if (frontRefStale && Array.isArray((verdict as { lines?: unknown })?.lines)) {
+    (verdict as { lines: string[] }).lines.push(
+      '【資料來源提示】期交所即時源從本伺服器暫時連不上，本報告價格以最後有效快照計算，可能落後即時價數分鐘；下單前請以券商即時報價為準。',
+    );
+  }
 
   const sqDate = sqDateStr || nextSQDate(nowCST);
 
@@ -1097,7 +1124,7 @@ export async function GET(req: Request) {
     generatedAt: new Date().toISOString(),
     phase: { phase: ph.phase, label: ph.label, isWeekend: ph.isWeekend, dow: ph.dow, hm: ph.hm, nextIsToday: ph.nextIsToday, nextTradeDate: fmtDate(ntd) },
     data: {
-      spot, frontLast, frontVol, basis, basisPct,
+      spot, frontLast, frontVol, basis, basisPct, frontRefStale,
       chips, spxLastChgPct, vix, tsmChgPct, nvdaChgPct, nvda10dChgPct, a50ChgPct,
       marginBalance, marginChg, last5RetPct: last5Ret * 100,
       todayLow, todayLowTime, todayHigh,

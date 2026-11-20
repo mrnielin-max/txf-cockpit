@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { fetchMisQuoteList, MisQuote, pickFrontContract } from '@/lib/taifexMis';
+import { fetchMisQuoteList, MisQuote, pickFrontContract, fetchSiteTxf } from '@/lib/taifexMis';
 import { buildOutlook } from '@/lib/outlook';
 import { getCachedWeights } from '@/lib/reviewStore';
 
@@ -90,6 +90,22 @@ export async function GET() {
     if (fq) frontLast = num(fq.CLastPrice) ?? num(fq.CRefPrice);
   } catch { /* ignore */ }
 
+  // MIS 失聯 fallback（教訓 2026-11-20 夜盤：TAIFEX 間歇性擋 Vercel 節點 IP，
+  // 用戶反映過「無法取得台指期現價」反覆出現）→ 改抓本站 /api/txf：
+  // 它有自己的 last-good 快照，失聯時仍回最後有效價；建議照產、明確標註資料時間。
+  let refStaleNote = '';
+  if (frontLast === null) {
+    const fb = await fetchSiteTxf();
+    const fl = num(String(fb?.front?.last ?? ''));
+    if (fl !== null && fl > 0) {
+      frontLast = fl;
+      const d8 = String(fb?.front?.date || ''), t8 = String(fb?.front?.time || '');
+      const when = d8.length >= 8 && t8.length >= 4
+        ? `${d8.slice(4, 6)}/${d8.slice(6, 8)} ${t8.slice(0, 2)}:${t8.slice(2, 4)}` : '';
+      if (fb?.fallback) refStaleNote = `（注意：期交所即時源暫時連不上，現價用最後有效快照${when ? ` ${when}（台北）` : ''}）`;
+    }
+  }
+
   // SGX A50（txt 格式）
   let a50Chg: number | null = null;
   try {
@@ -179,7 +195,8 @@ export async function GET() {
     date: dateStr,
     slot: `${dateStr} ${slotHM}`,
     hm, phaseLabel,
-    ref, score, dir, advice, zone, exitRule,
+    ref, score, dir, advice: refStaleNote && advice !== '無法取得台指期現價' ? advice + refStaleNote : advice, zone, exitRule,
+    refStale: refStaleNote || null,
     cycleEndLabel, sigCyclePts: Math.round(sigC), tpPts: tpD, slPts: slD,
     drivers: drivers.join('｜'),
     outlook,

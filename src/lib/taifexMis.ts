@@ -21,32 +21,58 @@ export async function fetchMisRawList(
   revalidateSec = 5,
   timeout = 12000,
 ): Promise<MisQuote[]> {
-  try {
-    const res = await fetch(MIS_URL, {
-      method: 'POST',
-      headers: MIS_HEADERS,
-      // 教訓（2026-11-20）：此 API 的商品欄位是 CID（完整 pageAttr 結構），舊寫法
-      // CommodityID 會被無視、永遠回 TXF。大台 CID=TXF、小台 CID=MXF、微台 CID=TMF。
-      body: JSON.stringify({
-        MarketType: marketType,
-        SymbolType: 'F',
-        KindID: '1',
-        CID: commodityID,
-        ExpireMonth: '',
-        RowSize: '全部',
-        PageNo: '',
-        SortColumn: '',
-        AscDesc: 'A',
-      }),
-      signal: AbortSignal.timeout(timeout),
-      next: { revalidate: revalidateSec },
-    } as RequestInit);
-    const d = await res.json();
-    if (d?.RtCode !== '0' || !d?.RtData?.QuoteList) return [];
-    return d.RtData.QuoteList as MisQuote[];
-  } catch {
-    return [];
+  // 教訓（2026-11-20 夜盤）：TAIFEX 會間歇性拒絕/無回應來自資料中心 IP（Vercel）
+  // 的請求，單次抓取失敗就讓整站顯示「無法取得現價」。失敗時重試一次，
+  // 第二次用 cache-bust 網址避開 Next 資料快取中已存的失敗/空回應。
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch(attempt === 0 ? MIS_URL : `${MIS_URL}?retry=${Date.now()}`, {
+        method: 'POST',
+        headers: MIS_HEADERS,
+        // 教訓（2026-11-20）：此 API 的商品欄位是 CID（完整 pageAttr 結構），舊寫法
+        // CommodityID 會被無視、永遠回 TXF。大台 CID=TXF、小台 CID=MXF、微台 CID=TMF。
+        body: JSON.stringify({
+          MarketType: marketType,
+          SymbolType: 'F',
+          KindID: '1',
+          CID: commodityID,
+          ExpireMonth: '',
+          RowSize: '全部',
+          PageNo: '',
+          SortColumn: '',
+          AscDesc: 'A',
+        }),
+        signal: AbortSignal.timeout(timeout),
+        next: { revalidate: attempt === 0 ? revalidateSec : 0 },
+      } as RequestInit);
+      const d = await res.json();
+      if (d?.RtCode === '0' && d?.RtData?.QuoteList) return d.RtData.QuoteList as MisQuote[];
+    } catch { /* fallthrough：重試 */ }
+    if (attempt === 0) await new Promise(r => setTimeout(r, 500));
   }
+  return [];
+}
+
+// MIS 從部署節點（Vercel）失聯時的最後一道防線：改抓「本站 /api/txf」。
+// /api/txf 內建 last-good 快照（MIS 失聯時回傳最後有效收盤/成交狀況），
+// 因此即使 TAIFEX 擋掉本容器的 IP，仍拿得到最近的價格而不是「無法取得」。
+// 30 秒記憶體快取：同一請求/同一容器內多個呼叫點不會重複打 HTTP。
+let siteTxfCache: { t: number; data: any } | null = null;
+export async function fetchSiteTxf(): Promise<any | null> {
+  if (siteTxfCache && Date.now() - siteTxfCache.t < 30000) return siteTxfCache.data;
+  const base = process.env.VERCEL_PROJECT_PRODUCTION_URL
+    ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+    : 'https://txf-cockpit.vercel.app';
+  try {
+    const r = await fetch(`${base}/api/txf?fb=${Date.now()}`, {
+      headers: { 'Cache-Control': 'no-cache' },
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!r.ok) return null;
+    const data = await r.json();
+    siteTxfCache = { t: Date.now(), data };
+    return data;
+  } catch { return null; }
 }
 
 // 清單新鮮度 = 「有實際成交價」的報價中最大的 CDate+CTime。
