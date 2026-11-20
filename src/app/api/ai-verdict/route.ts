@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { fetchMisQuoteList, MisQuote, fetchFrontBlock } from '@/lib/taifexMis';
+import { fetchMisQuoteList, MisQuote, fetchFrontBlock, pickFrontContract } from '@/lib/taifexMis';
 import { appendTapePoint, analyzeTape, type IntradayState } from '@/lib/tapeStore';
 
 export const revalidate = 0;
@@ -283,10 +283,14 @@ export async function GET(req: Request) {
         txfSDate = (q.CDate || '').replace(/\D/g, '');
       }
       if (q.SymbolID === 'TXF-P' && spot === null) spot = num(q.CRefPrice);
-      if (/^TXF[A-Z]\d-[MF]$/.test(q.SymbolID || '') && frontLast === null) {
-        frontLast = num(q.CLastPrice) ?? num(q.CRefPrice);
-        frontVol = num(q.CTotalVolume);
-      }
+    }
+    // 近月必須用 pickFrontContract（剔除到期契約＋成交量最大）。
+    // 教訓 2026-11-20：取「第一個符合 TXF[A-Z]\d 的行」可能命中已到期契約的
+    // 殘留舊價（實測 snap-advice 拿到 36215 而非近月 38107），整份建議全錯。
+    const fq = pickFrontContract(txfQuotes, 'TXF');
+    if (fq) {
+      frontLast = num(fq.CLastPrice) ?? num(fq.CRefPrice);
+      frontVol = num(fq.CTotalVolume);
     }
   } catch { /* ignore */ }
 
@@ -584,11 +588,9 @@ export async function GET(req: Request) {
   // 滾動計算區間位置/15分30分動能/V轉/洗刷偵測 → 產生即時敘事 + intraday 因子（±3）參與評分。
   let frontOpen: number | null = null, frontHigh: number | null = null, frontLow: number | null = null;
   try {
-    for (const q of txfQuotes) {
-      if (/^TXF[A-Z]\d-[MF]$/.test(q.SymbolID || '') && num(q.CLastPrice) !== null) {
-        frontOpen = num(q.COpenPrice); frontHigh = num(q.CHighPrice); frontLow = num(q.CLowPrice);
-        break;
-      }
+    const fq2 = pickFrontContract(txfQuotes, 'TXF');
+    if (fq2 && num(fq2.CLastPrice) !== null) {
+      frontOpen = num(fq2.COpenPrice); frontHigh = num(fq2.CHighPrice); frontLow = num(fq2.CLowPrice);
     }
   } catch { /* ignore */ }
   let intraday: IntradayState | null = null;

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { fetchMisQuoteList, MisQuote } from '@/lib/taifexMis';
+import { fetchMisQuoteList, MisQuote, pickFrontContract } from '@/lib/taifexMis';
 import { buildOutlook } from '@/lib/outlook';
 import { getCachedWeights } from '@/lib/reviewStore';
 
@@ -81,14 +81,13 @@ export async function GET() {
     return `${d.getUTCMonth() + 1}/${d.getUTCDate()}（週${['日', '一', '二', '三', '四', '五', '六'][d.getUTCDay()]}）夜盤收盤`;
   })();
 
-  // 台指期近月價
+  // 台指期近月價（用 pickFrontContract：剔除到期契約＋成交量最大。
+  // 教訓 2026-11-20：取「第一個符合 TXF[A-Z] 的行」會命中已到期契約——
+  // 實測 ref=36215 而非真實近月 38107，整份建議全錯）
   let frontLast: number | null = null;
   try {
-    for (const q of txfQuotes) {
-      if (/^TXF[A-Z]\d-[MF]$/.test(q.SymbolID || '') && frontLast === null) {
-        frontLast = num(q.CLastPrice) ?? num(q.CRefPrice);
-      }
-    }
+    const fq = pickFrontContract(txfQuotes, 'TXF');
+    if (fq) frontLast = num(fq.CLastPrice) ?? num(fq.CRefPrice);
   } catch { /* ignore */ }
 
   // SGX A50（txt 格式）
