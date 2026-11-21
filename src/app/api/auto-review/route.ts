@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import {
   readReviewBin, writeReviewBin, DEFAULT_WEIGHTS,
-  type ReviewRecord, type FactorWeights,
+  type ReviewRecord, type FactorWeights, type ReviewBin,
 } from '@/lib/reviewStore';
 
 // ════════════════════════════════════════════════════════════
@@ -111,7 +111,7 @@ function factorSignals(rec: AdvRec): { uslive: number; a50: number; vix: number;
   return { uslive, a50, vix, nvda };
 }
 
-async function reviewSession(id: string, date: string, session: '日盤' | '夜盤', allRecs: AdvRec[]): Promise<ReviewRecord | null> {
+async function reviewSession(id: string, date: string, session: '日盤' | '夜盤', allRecs: AdvRec[], sharedBin?: ReviewBin): Promise<ReviewRecord | null> {
   // 實際行情：日盤用 ^TWII 30m；夜盤台指期跟美股期貨連動，用 ES=F 30m 當代理
   const sym = session === '日盤' ? '%5ETWII' : 'ES%3DF';
   const bars = bars30(await fetchJson(`https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=30m&range=5d`));
@@ -164,20 +164,44 @@ async function reviewSession(id: string, date: string, session: '日盤' | '夜�
   const byFactor: ReviewRecord['byFactor'] = {};
   for (const f of Object.keys(fac)) byFactor[f] = { ...fac[f], rate: fac[f].samples ? fac[f].hits / fac[f].samples : 0 };
 
-  // ── 自動優化：因子權重微調（樣本≥5 才動；命中率 0.5 不變，溫和乘性調整，界限 0.5~2.0）──
-  const bin = await readReviewBin();
+  // ── 自動優化：因子權重微調（2026-11-21 修正：舊版樣本≥5 才動，但日盤每場只有 3-4 筆，
+  //    導致 0% 命中率也永遠不調整、還誤報「已自動下調」。改為階梯樣本門檻：≥3 半強度、≥6 全強度）──
+  const bin = sharedBin ?? await readReviewBin();
   const w: FactorWeights = { ...bin.weights };
   const weightChanges: string[] = [];
+  const adjustedFacs = new Set<string>();
   const facName: Record<string, string> = { uslive: '美股即時', a50: 'A50', vix: 'VIX', nvda: 'NVDA' };
   for (const f of Object.keys(fac) as (keyof FactorWeights)[]) {
     const s = fac[f];
-    if (s.samples < 5) continue;
+    if (s.samples < 3) continue; // 低於 3 樣本統計上無意義，跳過
     const rate = s.hits / s.samples;
-    const mult = clamp(0.8 + 0.4 * rate, 0.8, 1.2); // rate .5→1.0, .6→1.04, .4→0.96
+    // 階梯強度：3-5 樣本用半強度（±10%），6+ 樣本用全強度（±20%）
+    const mult = s.samples >= 6
+      ? clamp(0.8 + 0.4 * rate, 0.8, 1.2)   // rate .5→1.0, .6→1.04, .4→0.96
+      : clamp(0.9 + 0.2 * rate, 0.9, 1.1); // rate .5→1.0, .0→0.9, 1.0→1.1
     const nw = Math.round(clamp(w[f] * mult, 0.5, 2.0) * 1000) / 1000;
     if (Math.abs(nw - w[f]) >= 0.005) {
-      weightChanges.push(`${facName[f]}權重 ${w[f].toFixed(2)}→${nw.toFixed(2)}（本次命中率 ${(rate * 100).toFixed(0)}%，${s.samples} 樣本）`);
+      weightChanges.push(`${facName[f]}權重 ${w[f].toFixed(2)}→${nw.toFixed(2)}（本次命中率 ${(rate * 100).toFixed(0)}%，${s.samples} 樣本${s.samples >= 6 ? '' : '・半強度'}）`);
       w[f] = nw;
+      adjustedFacs.add(f);
+    }
+  }
+
+  // ── 連續低命中率升級處置：最近 2 場（含本場）都 <45% → 額外懲罰所有 rate<0.5 的因子 ──
+  const prevSession = (bin.reviews || []).find(x => x.id !== id);
+  const consecutiveLow = hitRate < 0.45 && !!prevSession && prevSession.hitRate < 0.45;
+  if (consecutiveLow) {
+    for (const f of Object.keys(fac) as (keyof FactorWeights)[]) {
+      const s = fac[f];
+      if (s.samples < 3) continue;
+      const rate = s.hits / s.samples;
+      if (rate >= 0.5) continue;
+      const nw = Math.round(clamp(w[f] * 0.9, 0.5, 2.0) * 1000) / 1000;
+      if (Math.abs(nw - w[f]) >= 0.005) {
+        weightChanges.push(`【連續兩場<45%】${facName[f]}權重再降至 ${nw.toFixed(2)}（命中率 ${(rate * 100).toFixed(0)}%）`);
+        w[f] = nw;
+        adjustedFacs.add(f);
+      }
     }
   }
 
@@ -185,14 +209,17 @@ async function reviewSession(id: string, date: string, session: '日盤' | '夜�
   const lessons: string[] = [];
   lessons.push(`${date} ${session}共 ${recs.length} 筆建議，可評估 ${evaluated} 筆，方向命中 ${hits} 筆（命中率 ${(hitRate * 100).toFixed(0)}%）。`);
   if (hitRate >= 0.6) lessons.push('✅ 準確度達標（≥60%），維持現有評分邏輯。');
-  else if (hitRate >= 0.45) lessons.push('⚠️ 準確度普通，已依因子命中率微調權重，持續觀察。');
-  else lessons.push('❌ 準確度偏低（<45%）：本時段訊號與實際走勢背離，已自動下調表現差因子權重；若連續兩時段偏低，建議人工檢查是否有重大消息面主導（消息面權重高於技術訊號時引擎易失準）。');
+  else if (hitRate >= 0.45) lessons.push(weightChanges.length ? '⚠️ 準確度普通，已依因子命中率微調權重，持續觀察。' : '⚠️ 準確度普通（45~60%），本次未觸發權重調整，持續觀察。');
+  else lessons.push(weightChanges.length
+    ? `❌ 準確度偏低（<45%）：本時段訊號與實際走勢背離，已自動下調表現差因子權重（${weightChanges.length} 項調整${consecutiveLow ? '，且屬連續兩場偏低、已加重處置' : ''}）；若持續偏低，請人工檢查是否有重大消息面主導。`
+    : '❌ 準確度偏低（<45%）：本時段訊號與實際走勢背離，但各因子可歸因樣本 <3，統計上不足以安全調權重——本場記為警示，下一場若仍偏低將觸發連續低命中率強制下調。建議人工檢查是否有重大消息面主導。');
   for (const f of Object.keys(byFactor)) {
     const b = byFactor[f];
-    if (b.samples >= 5 && b.rate < 0.4) lessons.push(`🔧 缺失偵測：${facName[f]}因子命中率僅 ${(b.rate * 100).toFixed(0)}%（${b.samples} 樣本），近期為反向指標傾向，權重已自動調降。`);
-    else if (b.samples >= 5 && b.rate > 0.6) lessons.push(`✓ ${facName[f]}因子命中率 ${(b.rate * 100).toFixed(0)}%，表現有效，權重已自動調升。`);
+    const tag = adjustedFacs.has(f) ? '權重已自動調整' : b.samples < 3 ? '樣本<3未調整' : '命中率接近中性未調整';
+    if (b.samples >= 3 && b.rate < 0.4) lessons.push(`🔧 缺失偵測：${facName[f]}因子命中率僅 ${(b.rate * 100).toFixed(0)}%（${b.samples} 樣本），近期為反向指標傾向，${tag}。`);
+    else if (b.samples >= 3 && b.rate > 0.6) lessons.push(`✓ ${facName[f]}因子命中率 ${(b.rate * 100).toFixed(0)}%（${b.samples} 樣本），表現有效，${tag}。`);
   }
-  if (weightChanges.length === 0) lessons.push('權重無需調整（各因子樣本不足或命中率接近隨機）。');
+  if (weightChanges.length === 0) lessons.push('權重無需調整（各因子樣本不足 3 或命中率接近隨機）。');
   const noLive = recs.filter(r => !r.live || (r.live.es == null && r.live.nq == null)).length;
   if (noLive > recs.length * 0.3) lessons.push(`📡 資料健全度：${noLive}/${recs.length} 筆紀錄缺即時因子快照，已標記待修（資料源斷線會降低評估可信度）。`);
 
@@ -211,23 +238,34 @@ async function reviewSession(id: string, date: string, session: '日盤' | '夜�
   return okWrite ? rec : null;
 }
 
-export async function GET() {
+export async function GET(req: Request) {
   const nowCST = cstNow();
   const bin = await readReviewBin();
   const doneIds = new Set(bin.reviews.map(r => r.id));
   const pending = pendingSessions(nowCST, doneIds);
   const ran: ReviewRecord[] = [];
   const failed: string[] = [];
+  let sharedBin: ReviewBin | null = null;
 
-  if (pending.length) {
+  // ?rerun=id1,id2 → 強制以最新邏輯重算指定場次（覆蓋舊紀錄）
+  const rerunParam = new URL(req.url).searchParams.get('rerun') || '';
+  const rerunIds = rerunParam.split(',').map(s => s.trim()).filter(Boolean).slice(0, 6);
+
+  if (pending.length || rerunIds.length) {
     const allRecs = await readAdvice();
-    for (const p of pending.slice(0, 4)) {
-      const rec = await reviewSession(p.id, p.date, p.session, allRecs);
+    const targets: { id: string; date: string; session: '日盤' | '夜盤' }[] = [
+      ...pending.slice(0, 4).map(p => ({ ...p, session: p.session as '日盤' | '夜盤' })),
+      ...rerunIds.map(id => ({ id, date: id.slice(0, 10), session: (id.endsWith('-night') ? '夜盤' : '日盤') as '日盤' | '夜盤' })),
+    ];
+    // 共用同一個 bin 物件串流更新，避免多場各自讀寫造成免費 bin 服務傳播延遲下的互相覆蓋
+    sharedBin = await readReviewBin();
+    for (const p of targets) {
+      const rec = await reviewSession(p.id, p.date, p.session, allRecs, sharedBin);
       if (rec) ran.push(rec); else failed.push(p.id);
     }
   }
 
-  const fresh = ran.length ? await readReviewBin() : bin;
+  const fresh = sharedBin ?? bin;
   return NextResponse.json({
     ok: true,
     ts: nowCST.toISOString().slice(0, 19).replace('T', ' ') + ' (台北)',
