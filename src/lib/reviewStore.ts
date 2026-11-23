@@ -77,6 +77,22 @@ export async function writeReviewBin(bin: ReviewBin): Promise<boolean> {
   }
 }
 
+// ── 信心熔斷：最近兩場複盤命中率（記憶體快取 10 分鐘）──
+// 2026-11-23 教訓：連續低命中率期間引擎仍滿信心「建議賣」，全天開低走高 +2.2% 完全看錯方向。
+// 兩場都 <45% → 所有訊號分數減半（熔斷），直到複盤恢復。
+let hitCache: { ts: number; low: boolean; rates: number[] } | null = null;
+export async function getCachedRecentHit(): Promise<{ low: boolean; rates: number[] }> {
+  if (hitCache && Date.now() - hitCache.ts < 10 * 60 * 1000) return { low: hitCache.low, rates: hitCache.rates };
+  let low = false; let rates: number[] = [];
+  try {
+    const bin = await readReviewBin();
+    rates = bin.reviews.slice(0, 2).map(r => r.hitRate);
+    low = rates.length === 2 && rates.every(x => x < 0.45);
+  } catch { if (hitCache) return { low: hitCache.low, rates: hitCache.rates }; }
+  hitCache = { ts: Date.now(), low, rates };
+  return { low, rates };
+}
+
 // ── snap-advice 用的記憶體快取（serverless 實例內 10 分鐘有效，避免每 15 秒打 bin）──
 let wCache: { ts: number; w: FactorWeights } | null = null;
 export async function getCachedWeights(): Promise<FactorWeights> {

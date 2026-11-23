@@ -672,12 +672,16 @@ export async function GET(req: Request) {
     else if (m <= -10) add('retail', '散戶情緒(反向)', +2, `小台散戶淨多比 ${m.toFixed(1)} 過度看空 → 反向偏多`);
     else add('retail', '散戶情緒(反向)', 0, `小台散戶淨多比 ${m.toFixed(1)}，中性區間`);
   }
-  // F6 基差結構
+  // F6 基差因子（非線性：2026-11-20/23 教訓——舊線性版在 -5.9% 深貼水給空方分數、漲停 +9.5% 升水給多方分數，
+  // 兩端全反。極端貼水 = 軋空燃料（反向偏多）；極端升水 = 過熱（反向偏空）；常態區間才反映避險情緒。）
   if (basisPct !== null) {
-    if (basisPct < -0.5) add('basis', '基差', -2, `期貨貼水 ${basisPct.toFixed(2)}%（${basis?.toFixed(0)} 點）→ 避險/看空氣氛重`);
-    else if (basisPct < -0.2) add('basis', '基差', -1, `期貨貼水 ${basisPct.toFixed(2)}%（${basis?.toFixed(0)} 點）→ 偏謹慎`);
-    else if (basisPct > 0.2) add('basis', '基差', +1, `期貨升水 +${basisPct.toFixed(2)}%（${basis?.toFixed(0)} 點）→ 偏樂觀`);
-    else add('basis', '基差', 0, `基差 ${basis?.toFixed(0)} 點（${basisPct.toFixed(2)}%），中性`);
+    if (basisPct <= -3) add('basis', '基差', +2, `期貨深貼水 ${basisPct.toFixed(2)}%（${basis?.toFixed(0)} 點）：軋空燃料充足，收斂多以期貨上漲完成 → 均值回歸偏多、禁止追空`);
+    else if (basisPct <= -2) add('basis', '基差', 0, `期貨極端貼水 ${basisPct.toFixed(2)}%（${basis?.toFixed(0)} 點）：情緒偏空但軋空風險極高 → 中性、禁止追空`);
+    else if (basisPct < -0.5) add('basis', '基差', -1, `期貨貼水 ${basisPct.toFixed(2)}%（${basis?.toFixed(0)} 點）：避險情緒偏空`);
+    else if (basisPct >= 3) add('basis', '基差', -2, `期貨極端升水 +${basisPct.toFixed(2)}%（${basis?.toFixed(0)} 點）：過熱，收斂風險高 → 均值回歸偏空、禁止追多`);
+    else if (basisPct >= 2) add('basis', '基差', 0, `期貨升水過熱 +${basisPct.toFixed(2)}%（${basis?.toFixed(0)} 點）：追多風險高 → 中性、禁止追多`);
+    else if (basisPct > 0.2) add('basis', '基差', +1, `期貨升水 +${basisPct.toFixed(2)}%（${basis?.toFixed(0)} 點）：偏樂觀`);
+    else add('basis', '基差', 0, `基差 ${basis?.toFixed(0)} 點中性（${basisPct.toFixed(2)}%）｜收斂方向決定短線`);
   }
   // F7 VIX
   if (vix !== null) {
@@ -1219,6 +1223,10 @@ function buildVerdict(p: {
 
   const lines: string[] = [];
   const ref = p.refPrice;
+
+  // ── 極端行情保護（2026-11-23 教訓：漲停 +9.5% 升水時給買入建議 = 接刀；-5.9% 深貼水時給賣出建議 = 錯失軋空）──
+  if (p.basisPct !== null && p.basisPct >= 2) lines.push(`【極端保護】期貨升水 +${p.basisPct.toFixed(2)}% 過熱：禁止追多；多單宜分批停利，等基差收斂後再評估方向。`);
+  else if (p.basisPct !== null && p.basisPct <= -2) lines.push(`【極端保護】期貨貼水 ${p.basisPct.toFixed(2)}% 極端：軋空燃料充足，禁止在此追空；貼水收斂常以期貨上漲完成。`);
 
   // ════ 動態止盈止損校準（2026-11-18 再修正：以「波段週期 σ」為尺度，不是日內 σ——用戶要求按週期給建議、勿太快進快出）════
   // 週期 = 現在 → T+2 交易日夜盤收盤（p10~p90 即該週期分布）：σ_cycle = (P90−P10)/2.5631。
