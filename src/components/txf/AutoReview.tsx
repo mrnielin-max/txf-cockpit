@@ -77,7 +77,8 @@ export default function AutoReview() {
             )}
             {d.latest.map(r => {
               const open = expanded === r.id;
-              const rateCol = r.hitRate >= 0.6 ? '#3fb950' : r.hitRate >= 0.45 ? '#d29922' : '#f85149';
+              const noEval = r.evaluated === 0;
+              const rateCol = noEval ? '#6b7280' : r.hitRate >= 0.6 ? '#3fb950' : r.hitRate >= 0.45 ? '#d29922' : '#f85149';
               return (
                 <div key={r.id} style={{ background: '#161b22', border: '1px solid #21262d', borderRadius: 8, padding: '8px 12px' }}>
                   <div
@@ -85,7 +86,7 @@ export default function AutoReview() {
                     onClick={() => setExpanded(open ? null : r.id)}
                   >
                     <b style={{ fontSize: 13, color: '#e6edf3' }}>{r.date} {r.session}複盤</b>
-                    <span style={{ fontSize: 12, color: rateCol, fontWeight: 800 }}>命中率 {(r.hitRate * 100).toFixed(0)}%</span>
+                    <span style={{ fontSize: 12, color: rateCol, fontWeight: 800 }}>{noEval ? '不評估（收盤前最後K棒，無後續行情可驗證）' : `命中率 ${(r.hitRate * 100).toFixed(0)}%`}</span>
                     <span style={{ fontSize: 11, color: '#6b7280' }}>{r.hits}/{r.evaluated} 筆（共 {r.total} 筆建議）</span>
                     {r.weightChanges.length > 0 && <span style={{ fontSize: 11, color: '#58a6ff' }}>🔧 已自動調整 {r.weightChanges.length} 項權重</span>}
                     <span style={{ fontSize: 11, color: '#6b7280', marginLeft: 'auto' }}>{open ? '▲ 收起' : '▼ 檢討詳情'}</span>

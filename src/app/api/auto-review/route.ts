@@ -159,7 +159,24 @@ async function reviewSession(id: string, date: string, session: '日盤' | '夜�
       if ((s > 0 && mv > 0) || (s < 0 && mv < 0)) fac[f].hits++;
     }
   }
-  if (evaluated === 0) return null;
+  const bin = sharedBin ?? await readReviewBin();
+
+  // ── 不可評估場次：紀錄全部落在收盤前最後一根K棒（如日盤 13:30 那筆，之後已無 30m K 棒）
+  //    → 寫入「不評估」紀錄把場次標記為已處理，避免 3 天回溯窗口每 30 分鐘無限重試
+  //    （2026-11-23-day 教訓：failed 名單反覆出現同一場次）──
+  if (evaluated === 0) {
+    const rec0: ReviewRecord = {
+      id, date, session,
+      ts: new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 19).replace('T', ' ') + ' (台北)',
+      total: recs.length, evaluated: 0, hits: 0, hitRate: 0,
+      byFactor: Object.fromEntries(Object.keys(fac).map(f => [f, { samples: 0, hits: 0, rate: 0 }])),
+      misses: [],
+      lessons: [`本場次 ${recs.length} 筆建議全部落在收盤前最後一根K棒，無後續 30 分鐘行情可驗證方向，記為不評估（不計入命中率、不觸發權重調整）。`],
+      weightChanges: [],
+    };
+    bin.reviews = [rec0, ...bin.reviews.filter(x => x.id !== id)].slice(0, 120);
+    return (await writeReviewBin(bin)) ? rec0 : null;
+  }
 
   const hitRate = hits / evaluated;
   const byFactor: ReviewRecord['byFactor'] = {};
@@ -167,7 +184,6 @@ async function reviewSession(id: string, date: string, session: '日盤' | '夜�
 
   // ── 自動優化：因子權重微調（2026-11-21 修正：舊版樣本≥5 才動，但日盤每場只有 3-4 筆，
   //    導致 0% 命中率也永遠不調整、還誤報「已自動下調」。改為階梯樣本門檻：≥3 半強度、≥6 全強度）──
-  const bin = sharedBin ?? await readReviewBin();
   const w: FactorWeights = { ...bin.weights };
   const weightChanges: string[] = [];
   const adjustedFacs = new Set<string>();
@@ -189,7 +205,8 @@ async function reviewSession(id: string, date: string, session: '日盤' | '夜�
   }
 
   // ── 連續低命中率升級處置：最近 2 場（含本場）都 <45% → 額外懲罰所有 rate<0.5 的因子 ──
-  const prevSession = (bin.reviews || []).find(x => x.id !== id);
+  // 跳過「不評估」場次（evaluated=0 時 hitRate 恆為 0，納入會誤觸發連續低命中率懲罰）
+  const prevSession = (bin.reviews || []).find(x => x.id !== id && x.evaluated > 0);
   const consecutiveLow = hitRate < 0.45 && !!prevSession && prevSession.hitRate < 0.45;
   if (consecutiveLow) {
     for (const f of Object.keys(fac) as (keyof FactorWeights)[]) {
