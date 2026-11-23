@@ -67,27 +67,28 @@ function clamp(v: number, lo: number, hi: number) { return Math.min(hi, Math.max
 
 // 找「已收盤但還沒複盤」的時段（台北時間）
 function pendingSessions(nowCST: Date, doneIds: Set<string>): { id: string; date: string; session: '日盤' | '夜盤' }[] {
+  // 回溯 3 天補洞（2026-11-23 教訓：Vercel Hobby cron 未準時觸發，舊版窗口只看「當天日盤/昨晚夜盤」，
+  // 週一日盤複盤在午夜後就永久漏掉）。只要沒複盤過、收盤緩衝已過，就補。
   const out: { id: string; date: string; session: '日盤' | '夜盤' }[] = [];
-  const today = nowCST.toISOString().slice(0, 10);
-  const hm = nowCST.toISOString().slice(11, 16);
-  const dow = nowCST.getUTCDay();
-  // 日盤：13:45 收盤，14:00 後可複盤（當天）
-  if (dow >= 1 && dow <= 5 && hm >= '14:00') {
-    const id = `${today}-day`;
-    if (!doneIds.has(id)) out.push({ id, date: today, session: '日盤' });
-  }
-  // 夜盤：15:00–次日 05:00。05:10 後複盤「昨晚」的夜盤
-  if (hm >= '05:10' && hm < '14:00') {
-    const y = new Date(nowCST.getTime() - 24 * 3600 * 1000);
-    const yDay = y.toISOString().slice(0, 10);
-    const yDow = y.getUTCDay();
-    // 昨晚是交易日夜盤：週二~週六早上複盤（週一~週五的夜盤）
-    if (yDow >= 1 && yDow <= 5) {
-      const id = `${yDay}-night`;
-      if (!doneIds.has(id)) out.push({ id, date: yDay, session: '夜盤' });
+  const nowMs = nowCST.getTime();
+  for (let back = 0; back <= 3; back++) {
+    const d = new Date(nowMs - back * 86400000);
+    const dIso = d.toISOString().slice(0, 10);
+    const dow = d.getUTCDay();
+    if (dow < 1 || dow > 5) continue; // 週六日無日盤/夜盤起始
+    const Y = d.getUTCFullYear(), M = d.getUTCMonth(), D = d.getUTCDate();
+    // 日盤：13:45 收盤，14:00 後可複盤
+    if (nowMs >= Date.UTC(Y, M, D, 14, 0)) {
+      const id = `${dIso}-day`;
+      if (!doneIds.has(id)) out.push({ id, date: dIso, session: '日盤' });
+    }
+    // 夜盤：當日 15:00 開、次日 05:00 收，05:10 後可複盤
+    if (nowMs >= Date.UTC(Y, M, D + 1, 5, 10)) {
+      const id = `${dIso}-night`;
+      if (!doneIds.has(id)) out.push({ id, date: dIso, session: '夜盤' });
     }
   }
-  return out;
+  return out.sort((a, b) => a.id.localeCompare(b.id)); // 舊場次先補
 }
 
 // 該時段紀錄的 slot 範圍
@@ -260,6 +261,10 @@ export async function GET(req: Request) {
     // 共用同一個 bin 物件串流更新，避免多場各自讀寫造成免費 bin 服務傳播延遲下的互相覆蓋
     sharedBin = await readReviewBin();
     for (const p of targets) {
+      // 回溯窗口內無紀錄的場次會被反覆重試 → 先過濾零紀錄場次＋實例級記憶（3 天窗口教訓）
+      const [lo, hi] = slotRange(p.date, p.session);
+      const nRec = allRecs.filter(r => r.slot >= lo && r.slot <= hi).length;
+      if (nRec === 0) { failed.push(`${p.id}(無建議紀錄,跳過)`); continue; }
       const rec = await reviewSession(p.id, p.date, p.session, allRecs, sharedBin);
       if (rec) ran.push(rec); else failed.push(p.id);
     }
