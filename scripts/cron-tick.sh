@@ -12,6 +12,7 @@ SNAP=$(curl -s -m 90 "$BASE/api/snap-advice?tick=$T")
 if [ -n "$SNAP" ] && echo "$SNAP" | head -c 20 | grep -q '{'; then
   # 本地存檔：完整快照 append 到 JSONL（雲端掛了也能事後補回）
   echo "$SNAP" >> "$DATADIR/snap-archive.jsonl"
+  echo "$SNAP" > "$DATADIR/last-snap.json"
   SLOT=$(echo "$SNAP" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("slot",""))' 2>/dev/null)
   REFDIR=$(echo "$SNAP" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("ref"),d.get("dir"))' 2>/dev/null)
   # POST 並驗證回應 ok 欄位；失敗重試一次（間隔 10s）
@@ -27,6 +28,11 @@ if [ -n "$SNAP" ] && echo "$SNAP" | head -c 20 | grep -q '{'; then
 else
   echo "$(date -Is) snap FAIL" >> "$LOGDIR/tick.log"
 fi
+# 主要存儲寫入（每次都跑，snap 失敗時也能收回瀏覽器 POST 到 extendsclass 的紀錄）：
+# 合併 records.json + extendsclass 各節點 + 最新快照 → git push GitHub
+# （extendsclass 有分裂節點問題，2026-11-25 起 GitHub 為權威資料源）
+MRG=$(python3 /home/mrnie/txf-cockpit/scripts/advice-merge-push.py "$DATADIR/last-snap.json" 2>&1)
+echo "$(date -Is) $MRG" >> "$LOGDIR/tick.log"
 RV=$(curl -s -m 240 "$BASE/api/auto-review?tick=$T")
 echo "$(date -Is) review ran=$(echo "$RV" | python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("ranNow"))' 2>/dev/null)" >> "$LOGDIR/tick.log"
 # 日誌輪替：tick.log 留最近 2000 行；JSONL 存檔留最近 5000 行

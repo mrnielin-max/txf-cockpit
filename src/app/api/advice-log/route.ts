@@ -19,6 +19,28 @@ export const maxDuration = 60;
 // ════════════════════════════════════════════════════════════
 const BIN_ID = 'dabecfe';
 const BIN_URL = `https://extendsclass.com/api/json-storage/bin/${BIN_ID}`;
+// 2026-11-25 根因確認：extendsclass 免費 bin 是「分裂節點」——同一 bin 不同請求
+// 會打到不同後端節點，各自持有不同版本的資料（實測同時存在 n=169/n=100/n=84/n=0
+// 四種狀態），寫入隨時可能落到孤兒節點 → 紀錄凍結在舊 slot、雲端狀態時好時壞。
+// 因此改用 GitHub repo（txf-advice-data/records.json）為主要存儲：
+//   讀：本 API GET 優先讀 raw.githubusercontent（lambda 內 60s 快取防打爆 raw 限流）
+//   寫：WSL cron-tick.sh 每 30 分鐘合併 POST 紀錄＋快照 → git push（單一寫入者）
+//   extendsclass 降為備援寫入通道（瀏覽器 POST 仍寫，cron 會收回合併）
+const GH_RAW = 'https://raw.githubusercontent.com/mrnielin-max/txf-advice-data/main/records.json';
+let ghCache: { t: number; recs: SnapRecord[] } | null = null;
+async function readGithub(): Promise<SnapRecord[] | null> {
+  if (ghCache && Date.now() - ghCache.t < 60_000) return ghCache.recs;
+  try {
+    const r = await fetch(`${GH_RAW}?cb=${Date.now()}`, { cache: 'no-store', signal: AbortSignal.timeout(15000) });
+    if (!r.ok) return ghCache ? ghCache.recs : null;
+    const d = (await r.json()) as { records?: SnapRecord[] };
+    if (Array.isArray(d.records)) {
+      ghCache = { t: Date.now(), recs: d.records };
+      return d.records;
+    }
+  } catch { /* fallthrough */ }
+  return ghCache ? ghCache.recs : null;
+}
 const MAX_RECORDS = 120;
 const MAX_BIN_BYTES = 70_000; // 實測 75KB PUT 可過、108KB 被拒；留安全邊際
 const SAME_SLOT_THROTTLE_MS = 5 * 60_000; // 同 slot 覆寫節流：5 分鐘內最多寫一次
@@ -73,6 +95,12 @@ async function writeBin(records: SnapRecord[]): Promise<boolean> {
 }
 
 export async function GET() {
+  // 主要存儲：GitHub（讀取一致、無分裂節點問題）
+  const gh = await readGithub();
+  if (gh !== null) {
+    return NextResponse.json({ ok: true, source: 'github', count: gh.length, records: gh });
+  }
+  // 備援：extendsclass bin（可能讀到不同節點的舊資料，但比沒有好）
   try {
     const records = await readBin();
     return NextResponse.json({ ok: true, source: 'cloud', count: records.length, records });

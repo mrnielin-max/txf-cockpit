@@ -53,6 +53,15 @@ interface AdvRec {
   backfilled?: boolean;
 }
 async function readAdvice(): Promise<AdvRec[]> {
+  // 主要存儲：GitHub records.json（2026-11-25：extendsclass 有分裂節點問題，改讀 GitHub）
+  try {
+    const r = await fetch(`https://raw.githubusercontent.com/mrnielin-max/txf-advice-data/main/records.json?cb=${Date.now()}`,
+      { cache: 'no-store', signal: AbortSignal.timeout(15000) });
+    if (r.ok) {
+      const d = (await r.json()) as { records?: AdvRec[] };
+      if (Array.isArray(d.records) && d.records.length) return d.records;
+    }
+  } catch { /* 落備援 */ }
   try {
     const r = await fetch(ADV_BIN, { headers: { Accept: 'application/json' }, cache: 'no-store', signal: AbortSignal.timeout(12000) });
     const t = await r.text();
