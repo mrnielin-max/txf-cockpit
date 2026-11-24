@@ -24,13 +24,25 @@ async function fetchJson(url: string, init?: RequestInit): Promise<unknown> {
   } catch { return null; }
 }
 
-function chgFromYahoo(q: unknown): number | null {
+function chgFromYahoo(q: unknown, maxAbsPct = 25): number | null {
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const r = (q as any)?.chart?.result?.[0];
     const c = (r?.indicators?.quote?.[0]?.close || []) as (number | null)[];
-    const v = c.filter((x): x is number => x !== null);
-    if (v.length >= 2) return (v[v.length - 1] / v[v.length - 2] - 1) * 100;
+    const ts = (r?.timestamp || []) as number[];
+    // 教訓（2026-11-24 19:00 紀錄）：舊版 filter(null) 後直接取末兩筆，
+    // 中間缺 bar 時會拿 2~3 天前的收盤比 → TWN +16.6%、NVDA +31.5% 假訊號。
+    // 修法：取最後非 null 及其「相鄰交易日」的前一非 null（間隔 >4 天視為斷層，棄用）。
+    let i = c.length - 1;
+    while (i >= 0 && (c[i] === null || c[i] === undefined)) i--;
+    let j = i - 1;
+    while (j >= 0 && (c[j] === null || c[j] === undefined)) j--;
+    if (i < 0 || j < 0) return null;
+    if (ts[i] && ts[j] && ts[i] - ts[j] > 4 * 86400) return null; // 資料斷層，不可比
+    const chg = ((c[i] as number) / (c[j] as number) - 1) * 100;
+    // 異常值防護：超過 maxAbsPct 幾乎必為資料錯置（分割/錯 bar），棄用該因子
+    if (!Number.isFinite(chg) || Math.abs(chg) > maxAbsPct) return null;
+    return chg;
   } catch { /* ignore */ }
   return null;
 }
@@ -98,7 +110,13 @@ export async function GET() {
   {
     try {
       fqPick = pickFrontContract(txfQuotes, 'TXF');
-      if (frontLast === null && fqPick) frontLast = num(fqPick.CLastPrice) ?? num(fqPick.CRefPrice);
+      // 教訓（2026-11-25）：CLastPrice='-'（MIS 降級列）時曾用 `?? CRefPrice` 把
+      // 「昨日結算參考價 40324」當現價寫進紀錄（實際現價 ~38,3xx），貼水保護失效、
+      // 發出錯誤「建議賣」。現價只認 CLastPrice>0，拿不到就走後續 fallback。
+      if (frontLast === null && fqPick) {
+        const lp = num(fqPick.CLastPrice);
+        if (lp !== null && lp > 0) frontLast = lp;
+      }
     } catch { /* ignore */ }
   }
 
@@ -125,6 +143,22 @@ export async function GET() {
     }
   }
 
+  // 第三層備援：本站 tape 走勢 bin（前端輪詢每分鐘寫入的最新價點）。
+  // 教訓（2026-11-25）：MIS 降級 + last-good 過期時 ref 直接變結算價/ null，
+  // 整筆紀錄被污染或作廢；tape 通常有 2 小時內的新鮮價可救。
+  if (frontLast === null) {
+    try {
+      const { readTape } = await import('@/lib/tapeStore');
+      const pts = await readTape();
+      const lp = pts.length ? pts[pts.length - 1] : null;
+      // t 為台北時間字串 'YYYY-MM-DD HH:mm'；只信 2 小時內的點
+      if (lp && lp.p > 0 && Date.now() - new Date(lp.t.replace(' ', 'T') + '+08:00').getTime() < 2 * 3600_000) {
+        frontLast = lp.p;
+        refStaleNote = `（注意：期交所即時源與快照皆失效，現價用本站 tape 備援 ${lp.t}（台北），可能落後）`;
+      }
+    } catch { /* ignore */ }
+  }
+
   // SGX A50（txt 格式）
   let a50Chg: number | null = null;
   try {
@@ -133,7 +167,8 @@ export async function GET() {
     if (last && prev) a50Chg = (last / prev - 1) * 100;
   } catch { /* ignore */ }
 
-  const es = chgFromYahoo(esQ), nq = chgFromYahoo(nqQ), twn = chgFromYahoo(twnQ), smh = chgFromYahoo(smhQ);
+  // 指數型 ETF/期貨 ±12% 為資料錯置上限；SMH ±18%；NVDA 個股 ±25%（default）
+  const es = chgFromYahoo(esQ, 12), nq = chgFromYahoo(nqQ, 12), twn = chgFromYahoo(twnQ, 12), smh = chgFromYahoo(smhQ, 18);
   const nvda = chgFromYahoo(nvdaQ);
   let vix: number | null = null;
   try {
@@ -186,7 +221,10 @@ export async function GET() {
       if (cc.length) spotG = cc[cc.length - 1];
     } catch { /* ignore */ }
   }
-  const basisRawG = siteTxf?.front?.basisPct ?? siteTxf?.basisPct;
+  // basis 一致性（2026-11-25）：ref 若不是來自 siteTxf.front.last（走了 MIS 直抓或 tape 備援），
+  // 舊快照的 basisPct 與現用 ref 不同源 → 強制用 (ref-spot)/spot 重算，避免保護層誤判
+  const refFromSite = frontLast !== null && siteFrontLast !== null && frontLast === siteFrontLast;
+  const basisRawG = refFromSite ? (siteTxf?.front?.basisPct ?? siteTxf?.basisPct) : null;
   let basisG: number | null = (basisRawG === null || basisRawG === undefined || basisRawG === '') ? null : num(String(basisRawG));
   if (basisG === null && spotG !== null && spotG > 0 && ref !== null) basisG = (ref - spotG) / spotG * 100;
   let chgRawG: unknown = siteTxf?.front?.changePct;
