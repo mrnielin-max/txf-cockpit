@@ -24,6 +24,28 @@ async function fetchJson(url: string, init?: RequestInit): Promise<unknown> {
   } catch { return null; }
 }
 
+// 建議紀錄歷史（GitHub 權威源，60s 記憶體快取）：凍結偵測＋動量保護用
+const GH_REC = 'https://raw.githubusercontent.com/mrnielin-max/txf-advice-data/main/records.json';
+let histCache: { t: number; pts: { t: Date; ref: number }[] } | null = null;
+async function readHistoryRefs(): Promise<{ t: Date; ref: number }[]> {
+  if (histCache && Date.now() - histCache.t < 60_000) return histCache.pts;
+  try {
+    const r = await fetch(`${GH_REC}?cb=${Date.now()}`, { cache: 'no-store', signal: AbortSignal.timeout(12000) });
+    if (r.ok) {
+      const d = (await r.json()) as { records?: { slot: string; ref: number | null }[] };
+      if (Array.isArray(d.records)) {
+        const pts = d.records
+          .map(x => ({ t: new Date(String(x.slot).replace(' ', 'T') + '+08:00'), ref: x.ref }))
+          .filter((x): x is { t: Date; ref: number } => Number.isFinite(x.t.getTime()) && typeof x.ref === 'number' && x.ref > 0)
+          .sort((a, b) => a.t.getTime() - b.t.getTime());
+        histCache = { t: Date.now(), pts };
+        return pts;
+      }
+    }
+  } catch { /* ignore */ }
+  return histCache ? histCache.pts : [];
+}
+
 function chgFromYahoo(q: unknown, maxAbsPct = 25): number | null {
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -244,8 +266,53 @@ export async function GET() {
   else if (limitDn) guard = `期指跌停鎖死：殺低單不會成交，持空單者宜分批停利`;
   else if (basisG !== null && basisG >= 2) guard = `期貨升水 +${basisG.toFixed(2)}% 過熱：升水 >2% 歷來多以期貨下跌收斂，禁止追多`;
   else if (basisG !== null && basisG <= -2) guard = `期貨貼水 ${basisG.toFixed(2)}% 極端：軋空燃料充足，貼水收斂常以期貨上漲完成，禁止追空`;
-  const dirFinal = (dir === '多' && blockedLong) || (dir === '空' && blockedShort) ? '觀望' : dir;
+  let dirFinal = (dir === '多' && blockedLong) || (dir === '空' && blockedShort) ? '觀望' : dir;
   if (guard && dirFinal !== dir) drivers.push(`極端保護觸發：原判定「${dir}」被${limitUp ? '漲停鎖死' : limitDn ? '跌停鎖死' : basisG !== null && basisG >= 2 ? '升水過熱' : '極端貼水'}攔截，降為觀望`);
+
+  // ── 凍結資料偵測＋動量逆風保護（2026-11-28 覆盤新增）──
+  // 教訓1：11-26 01:30~05:30 ref 凍結在 38062 整整 4 小時（basis/score 全同）、refStale 未觸發，
+  //        整夜依死資料發「建議賣」，當日命中率被拖到 41%。
+  // 教訓2：11-27 深夜盤面反彈 +0.6% 仍一路喊空；統計 01-05 時段方向命中率僅 18%（2/11），
+  //        日盤 60%、夜盤前段 72%——美股盤中後段的隔夜因子已過時，逆動量單必敗。
+  const histPts = await readHistoryRefs();
+  if (ref !== null && histPts.length >= 3) {
+    const newest = histPts[histPts.length - 1];
+    if (Date.now() - newest.t.getTime() < 90 * 60_000) { // 歷史夠新鮮才用來閘門
+      const weekendNow = dow === 0 || dow === 6;
+      const lateNightNow = hm < '05:00' && dow >= 2 && dow <= 6;
+      const inSession = (hm >= '08:45' && hm < '13:45' && !weekendNow) || (hm >= '15:00' && !weekendNow) || lateNightNow;
+      // 凍結偵測：近 4 小時內連續 ≥4 筆歷史 ref 與現價完全相同（含本筆 ≥2.5 小時一價不動）
+      let same = 0;
+      for (let i = histPts.length - 1; i >= 0; i--) {
+        if (Date.now() - histPts[i].t.getTime() > 4 * 3600_000) break;
+        if (histPts[i].ref === ref) same++; else break;
+      }
+      if (same >= 4 && inSession) {
+        refStaleNote += `（警告：現價疑似來源凍結——連續 ${(same + 1) * 0.5} 小時以上同一價格，方向判定停用）`;
+        if (dirFinal !== '觀望') {
+          drivers.push(`凍結保護：近 ${same} 筆紀錄現價完全相同（≥${(same * 0.5).toFixed(1)} 小時）→ 原判定「${dirFinal}」降為觀望`);
+          dirFinal = '觀望';
+        }
+      }
+      // 動量保護：取 ~2 小時前的歷史價，漲 ≥+0.5% 禁新空、跌 ≥0.5% 禁新多（不逆即時動量）
+      let ref2h: number | null = null, bestGap = Infinity;
+      for (const p of histPts) {
+        const gap = Math.abs(Date.now() - p.t.getTime() - 2 * 3600_000);
+        const ageMin = (Date.now() - p.t.getTime()) / 60_000;
+        if (ageMin >= 90 && ageMin <= 180 && gap < bestGap) { bestGap = gap; ref2h = p.ref; }
+      }
+      if (ref2h !== null && ref2h > 0) {
+        const chg2h = (ref / ref2h - 1) * 100;
+        if (dirFinal === '空' && chg2h >= 0.5) {
+          drivers.push(`動量保護：近 2 小時已反彈 +${chg2h.toFixed(2)}%，逆動量追空實測低命中（深夜時段僅 18%）→ 降為觀望`);
+          dirFinal = '觀望';
+        } else if (dirFinal === '多' && chg2h <= -0.5) {
+          drivers.push(`動量保護：近 2 小時已下跌 ${chg2h.toFixed(2)}%，逆動量追多實測低命中 → 降為觀望`);
+          dirFinal = '觀望';
+        }
+      }
+    }
+  }
 
   // ── 大白話建議 + 區間 + 平倉條件（波段尺度：以週期 σ 為單位，勿太快進快出）──
   // 進場緩衝 ≈ 0.3σ_cycle、停利 ≈ 1.6σ_cycle、停損 ≈ 0.7σ_cycle（σ_cycle = 日σ×√2）
