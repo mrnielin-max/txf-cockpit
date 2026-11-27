@@ -294,24 +294,15 @@ export async function GET() {
           dirFinal = '觀望';
         }
       }
-      // 動量保護：取 ~2 小時前的歷史價，漲 ≥+0.5% 禁新空、跌 ≥0.5% 禁新多（不逆即時動量）
-      let ref2h: number | null = null, bestGap = Infinity;
-      for (const p of histPts) {
-        const gap = Math.abs(Date.now() - p.t.getTime() - 2 * 3600_000);
-        const ageMin = (Date.now() - p.t.getTime()) / 60_000;
-        if (ageMin >= 90 && ageMin <= 180 && gap < bestGap) { bestGap = gap; ref2h = p.ref; }
-      }
-      if (ref2h !== null && ref2h > 0) {
-        const chg2h = (ref / ref2h - 1) * 100;
-        if (dirFinal === '空' && chg2h >= 0.5) {
-          drivers.push(`動量保護：近 2 小時已反彈 +${chg2h.toFixed(2)}%，逆動量追空實測低命中（深夜時段僅 18%）→ 降為觀望`);
-          dirFinal = '觀望';
-        } else if (dirFinal === '多' && chg2h <= -0.5) {
-          drivers.push(`動量保護：近 2 小時已下跌 ${chg2h.toFixed(2)}%，逆動量追多實測低命中 → 降為觀望`);
-          dirFinal = '觀望';
-        }
-      }
+      // 深夜抑制（回測淨效益 +7，優於動量保護）：台北 01:00–04:59 ＝美股午後到收盤前段，
+      // 隔夜因子已過時、均值回歸主導。實測此時段方向命中率僅 18%（2/11），
+      // 回測「全部降觀望」：擋掉 9 筆錯、誤殺 2 筆對 → 不發方向單。
+      // （動量保護 ±0.5% 全天版回測為負貢獻：日盤誤殺 8 筆對只擋 3 筆錯，故不採用。）
     }
+  }
+  if (hm >= '01:00' && hm < '05:00' && dow >= 2 && dow <= 6 && dirFinal !== '觀望') {
+    drivers.push(`深夜抑制：01:00–05:00 為美股午後過時因子窗口，歷史方向命中率僅 18% → 原判定「${dirFinal}」降為觀望`);
+    dirFinal = '觀望';
   }
 
   // ── 大白話建議 + 區間 + 平倉條件（波段尺度：以週期 σ 為單位，勿太快進快出）──
